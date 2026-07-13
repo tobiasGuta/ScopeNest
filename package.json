@@ -1,0 +1,17 @@
+{
+  "name": "scopenest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated browser contexts for testing, research, and development.",
+  "scripts": {
+    "build": "npm run assets && npm run check",
+    "assets": "node tools/generate-icons.mjs",
+    "check": "node --check extension/src/background.js && node --check extension/src/ui/app.js",
+    "smoke:native": "node tools/native-smoke.mjs bin/scopenest-host.exe",
+    "test": "node --test extension/tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

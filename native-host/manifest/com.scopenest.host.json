@@ -1,0 +1,9 @@
+{
+  "name": "com.scopenest.host",
+  "description": "ScopeNest native messaging companion",
+  "path": "REPLACE_WITH_ABSOLUTE_HOST_PATH",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://nnmpnmnmmfoedjeionoopgnbjnepfolh/"
+  ]
+}

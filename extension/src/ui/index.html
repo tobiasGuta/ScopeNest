@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScopeNest</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="../../assets/logo.svg" width="38" height="38" alt="">
+        <div><h1>ScopeNest</h1><p>Isolated browser contexts</p></div>
+      </div>
+      <button id="open-side-panel" class="icon-button side-panel-button" type="button" title="Open side panel" aria-label="Open ScopeNest side panel">◧</button>
+    </header>
+
+    <div id="connection" class="connection" role="status" aria-live="polite">
+      <span class="status-dot"></span><span>Connecting to native host…</span>
+      <button id="retry" type="button" class="text-button" hidden>Retry</button>
+    </div>
+
+    <main>
+      <section class="quick-open" aria-labelledby="quick-open-title">
+        <div class="section-heading"><h2 id="quick-open-title">Open in a container</h2></div>
+        <label class="sr-only" for="quick-url">URL</label>
+        <input id="quick-url" type="url" inputmode="url" placeholder="https://example.com" autocomplete="url">
+        <div class="quick-row">
+          <label class="sr-only" for="quick-container">Container</label>
+          <select id="quick-container" aria-label="Choose a container"><option value="">Choose container</option></select>
+          <button id="open-url" class="button secondary" type="button">Open URL</button>
+          <button id="open-current" class="button secondary" type="button">Current page</button>
+        </div>
+      </section>
+
+      <section class="containers" aria-labelledby="containers-title">
+        <div class="section-heading actions-heading">
+          <div><h2 id="containers-title">Containers</h2><span id="container-count" class="muted"></span></div>
+          <div class="heading-buttons">
+            <button id="new-temporary" class="button ghost" type="button">+ Temporary</button>
+            <button id="new-container" class="button primary" type="button">+ New</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="search"><span aria-hidden="true">⌕</span><span class="sr-only">Search containers</span><input id="search" type="search" placeholder="Search containers"></label>
+          <label><span class="sr-only">Filter containers</span><select id="filter" aria-label="Filter containers"><option value="all">All</option><option value="running">Running</option><option value="saved">Saved</option><option value="temporary">Temporary</option></select></label>
+          <label><span class="sr-only">Sort containers</span><select id="sort" aria-label="Sort containers"><option value="name">Name</option><option value="lastUsed">Last used</option><option value="created">Newest</option></select></label>
+        </div>
+        <div id="loading" class="state-card"><span class="spinner" aria-hidden="true"></span><p>Loading containers…</p></div>
+        <div id="empty" class="state-card" hidden>
+          <div class="empty-icon" aria-hidden="true">▣</div>
+          <h3>No containers yet</h3>
+          <p>Create a context for each role or account you test.</p>
+          <button id="empty-create" class="button primary" type="button">Create your first container</button>
+        </div>
+        <div id="no-results" class="state-card" hidden><h3>No matches</h3><p>Try a different search or filter.</p></div>
+        <div id="container-list" class="container-list" aria-live="polite"></div>
+      </section>
+
+      <section class="host-details" aria-labelledby="host-title">
+        <button id="host-toggle" class="disclosure" type="button" aria-expanded="false" aria-controls="host-content">
+          <span><strong id="host-title">Native host details</strong><small id="host-summary">Checking connection…</small></span><span aria-hidden="true">⌄</span>
+        </button>
+        <div id="host-content" hidden>
+          <dl><div><dt>Data directory</dt><dd id="data-directory">—</dd></div><div><dt>Extension ID</dt><dd id="extension-id">—</dd></div></dl>
+          <button id="cleanup-temporary" class="button ghost" type="button">Clean temporary profiles</button>
+          <p class="privacy-note">Local only. No analytics, ads, page-content access, or external network service.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="container-dialog" aria-labelledby="dialog-title">
+    <form id="container-form" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow" id="dialog-kind">CONTAINER</p><h2 id="dialog-title">Create container</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog">×</button></div>
+      <input id="container-id" type="hidden">
+      <input id="temporary" type="hidden" value="false">
+      <label>Name<input id="name" name="name" required maxlength="80" placeholder="Target — User A"></label>
+      <div class="form-row">
+        <label>Color<input id="color" name="color" type="color" value="#725cff"></label>
+        <label>Icon or emoji<input id="icon" name="icon" maxlength="16" placeholder="🔐"></label>
+      </div>
+      <label>Browser<select id="browser" name="browser" required></select></label>
+      <label id="browser-path-wrap">Browser executable<input id="browser-path" name="browserPath" required placeholder="Full path to browser executable" spellcheck="false"></label>
+      <label class="checkbox"><input id="launch-after" type="checkbox"><span>Launch after saving</span></label>
+      <p id="form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="button ghost" value="cancel">Cancel</button><button id="save" class="button primary" value="default">Save container</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog"><div class="danger-icon" aria-hidden="true">!</div><h2 id="confirm-title">Delete container?</h2><p id="confirm-message"></p><div class="dialog-actions"><button class="button ghost" value="cancel">Cancel</button><button class="button danger" value="confirm">Delete permanently</button></div></form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

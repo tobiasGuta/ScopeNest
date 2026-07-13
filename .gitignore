@@ -1,0 +1,18 @@
+# Build outputs
+bin/
+native-host/scopenest-host
+native-host/scopenest-host.exe
+*.test
+coverage/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local packages and temporary files
+node_modules/
+.tools/
+*.tmp
+*.log

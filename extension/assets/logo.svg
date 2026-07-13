@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">ScopeNest</title>
+  <desc id="desc">Three nested, separated browser compartments forming a secure nest.</desc>
+  <defs>
+    <linearGradient id="bg" x1="16" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#725cff"/>
+      <stop offset="1" stop-color="#3a27bb"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)"/>
+  <rect x="27" y="29" width="74" height="62" rx="9" fill="none" stroke="#fff" stroke-width="7"/>
+  <path d="M27 46h74" stroke="#fff" stroke-width="7"/>
+  <circle cx="40" cy="37.5" r="3" fill="#bff7e8"/>
+  <circle cx="51" cy="37.5" r="3" fill="#d9d3ff"/>
+  <rect x="44" y="56" width="41" height="35" rx="7" fill="#bff7e8" stroke="#fff" stroke-width="5"/>
+  <rect x="57" y="66" width="28" height="25" rx="5" fill="#1f175f" stroke="#fff" stroke-width="5"/>
+  <path d="M36 103h56" stroke="#bff7e8" stroke-width="7" stroke-linecap="round"/>
+</svg>
