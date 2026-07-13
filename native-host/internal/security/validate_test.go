@@ -25,11 +25,23 @@ func TestIDsAreSecureAndValid(t *testing.T) {
 
 func TestResolveWithinRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
-	if _, err := ResolveWithin(root, filepath.Join(root, "containers", "safe")); err != nil {
+	if _, err := ResolveWithin(root, filepath.Join(root, "containers", "missing", "safe")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ResolveWithin(root, filepath.Join(root, "..", "escape")); err == nil || !IsManagedPathError(err) {
 		t.Fatalf("expected managed path error, got %v", err)
+	}
+}
+
+func TestResolveWithinCanonicalizesMissingChildrenBelowSymlinkedRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "root-alias")
+	if err := os.Symlink(realRoot, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	candidate := filepath.Join(alias, "containers", "missing", "profile")
+	if _, err := ResolveWithin(alias, candidate); err != nil {
+		t.Fatalf("rejected missing descendants below canonicalized root: %v", err)
 	}
 }
 

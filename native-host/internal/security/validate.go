@@ -122,14 +122,24 @@ func ResolveWithin(root, candidate string) (string, error) {
 }
 
 func evalExisting(path string) string {
-	if evaluated, err := filepath.EvalSymlinks(path); err == nil {
-		return evaluated
+	cleaned := filepath.Clean(path)
+	current := cleaned
+	missing := []string{}
+	for {
+		evaluated, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				evaluated = filepath.Join(evaluated, missing[i])
+			}
+			return evaluated
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return cleaned
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
 	}
-	parent := filepath.Dir(path)
-	if evaluated, err := filepath.EvalSymlinks(parent); err == nil {
-		return filepath.Join(evaluated, filepath.Base(path))
-	}
-	return path
 }
 
 func ValidateExecutable(path string) (string, error) {

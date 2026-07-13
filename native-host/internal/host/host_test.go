@@ -315,6 +315,9 @@ func TestTemporaryCleanupDefersWhenProfileLockExists(t *testing.T) {
 func TestProcessStateReconciliationClearsStalePID(t *testing.T) {
 	h, st, executable := testHost(t)
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Stale", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	c := created.Data.(model.Container)
 	_ = st.Update(func(db *model.Database) error {
 		db.Containers[0].Running = true
@@ -338,6 +341,9 @@ func TestLaunchSuccessPersistsRunningProcess(t *testing.T) {
 	launcher := &queuedLauncher{processes: []browser.Process{process}}
 	h.launcher = launcher
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Launch success", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 
 	response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID, URL: "https://example.com"}))
@@ -369,6 +375,9 @@ func TestLaunchFailureAfterProcessCreationTerminatesProcess(t *testing.T) {
 	unexpectedWatcher := make(chan struct{})
 	h.watcher = func(string, browser.Process) { close(unexpectedWatcher) }
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Lost reservation", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	launchRequest := request(t, "launch_container", launchInput{ID: container.ID, URL: "https://example.com"})
 
@@ -426,6 +435,9 @@ func TestCloseTerminatesOwnedProcessAndWatcherStopsContainer(t *testing.T) {
 	process := newControlledProcess(os.Getpid(), false)
 	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Close", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	launched := h.Handle(request(t, "launch_container", launchInput{ID: container.ID}))
 	if !launched.Success {
@@ -454,6 +466,9 @@ func TestDuplicateLaunchAttemptIsRejected(t *testing.T) {
 	launcher := &queuedLauncher{processes: []browser.Process{process}}
 	h.launcher = launcher
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Duplicate", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	first := h.Handle(request(t, "launch_container", launchInput{ID: container.ID}))
 	if !first.Success {
@@ -485,6 +500,9 @@ func TestOldWatcherCannotOverwriteRelaunchedProcess(t *testing.T) {
 		}
 	}
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Relaunch", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	first := h.Handle(request(t, "launch_container", launchInput{ID: container.ID}))
 	if !first.Success {
@@ -673,6 +691,9 @@ func TestLaunchReservationBlocksAnotherHost(t *testing.T) {
 func TestConcurrentLaunchReservationsHaveSingleWinner(t *testing.T) {
 	h1, st, executable := testHost(t)
 	created := h1.Handle(request(t, "create_container", containerInput{Name: "Concurrent", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	secondStore, err := store.New(st.Root())
 	if err != nil {
@@ -789,6 +810,9 @@ func TestStaleLaunchReservationCanBeRecovered(t *testing.T) {
 	clock := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
 	h1.now = func() time.Time { return clock }
 	created := h1.Handle(request(t, "create_container", containerInput{Name: "Stale reservation", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	_, firstToken, err := h1.reserveLaunch(container.ID)
 	if err != nil {
@@ -809,6 +833,9 @@ func TestStaleLaunchReservationCanBeRecovered(t *testing.T) {
 func TestLaunchReservationRefusesProfileAlreadyInUse(t *testing.T) {
 	h, _, executable := testHost(t)
 	created := h.Handle(request(t, "create_container", containerInput{Name: "In use", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	if err := os.WriteFile(filepath.Join(container.ProfilePath, "SingletonLock"), []byte("owned"), 0600); err != nil {
 		t.Fatal(err)
@@ -829,6 +856,9 @@ func TestLaunchFailureReleasesReservation(t *testing.T) {
 	h, st, executable := testHost(t)
 	h.launcher = failingLauncher{err: errors.New("expected launch failure")}
 	created := h.Handle(request(t, "create_container", containerInput{Name: "Failure", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
 	container := created.Data.(model.Container)
 	response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID, URL: "https://example.com"}))
 	if response.Success || response.ErrorCode != "LAUNCH_FAILED" {
