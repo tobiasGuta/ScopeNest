@@ -1,4 +1,4 @@
-import { createRequest, HOST_NAME, parseResponse } from "./shared/protocol.js";
+import { createRequest, HOST_NAME, parseResponse, timeoutForCommand } from "./shared/protocol.js";
 
 let nativePort = null;
 let connectionError = null;
@@ -40,13 +40,15 @@ function connect() {
 
 function nativeRequest(command, data) {
   const request = createRequest(command, data);
+  const timeoutMs = timeoutForCommand(command);
   return new Promise((resolve, reject) => {
     let port;
     try { port = connect(); } catch (error) { reject(error); return; }
     const timer = setTimeout(() => {
       pending.delete(request.requestId);
-      const error = new Error("Native host request timed out."); error.code = "TIMEOUT"; reject(error);
-    }, 15000);
+      const seconds = timeoutMs / 1000;
+      const error = new Error(`Native host request timed out after ${seconds} seconds.`); error.code = "TIMEOUT"; reject(error);
+    }, timeoutMs);
     pending.set(request.requestId, { request, resolve, reject, timer });
     try { port.postMessage(request); } catch (error) { clearTimeout(timer); pending.delete(request.requestId); reject(error); }
   });

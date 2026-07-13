@@ -18,20 +18,16 @@ type Candidate struct {
 }
 
 type Launcher interface {
-	Start(executable string, args []string) (*os.Process, error)
+	Start(executable string, args []string) (Process, error)
 }
 
 type ExecLauncher struct{}
 
-func (ExecLauncher) Start(executable string, args []string) (*os.Process, error) {
-	cmd := exec.Command(executable, args...)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return cmd.Process, nil
+type Process interface {
+	PID() int
+	Running() bool
+	Wait() error
+	Terminate() error
 }
 
 func Arguments(profilePath, rawURL string) ([]string, error) {

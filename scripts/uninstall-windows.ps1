@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $HostName = 'com.scopenest.host'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'ScopeNest\NativeHost'
+# Brave shares Chrome's native-messaging registry namespace on Windows.
 $keys = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName",
     "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$HostName"

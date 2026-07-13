@@ -37,6 +37,10 @@ The native manifest must restrict `allowed_origins` to the installed ScopeNest e
 - Destructive deletion operates only on `ScopeNest/containers/<validated-id>`.
 - Directories use owner-only permissions where supported; metadata uses mode `0600`.
 - Metadata updates write a protected temporary file, sync it, then atomically replace the destination (`rename` on Unix; `MoveFileExW` with replace/write-through on Windows).
+- Every metadata read or read-modify-write transaction holds `containers.lock` with `flock` on Unix or `LockFileEx` on Windows. Lock acquisition times out instead of waiting indefinitely.
+- Launches first persist a cryptographically random `launching` reservation. Only the matching token may commit the running PID or roll back a failed launch.
+- Stale launch reservations are recovered only after a bounded timeout and only when Chromium profile-lock markers show that the profile is not in use.
+- Permanent and temporary deletion recheck lifecycle state and remove metadata/profile data inside the same locked transaction, preventing launch-versus-delete races.
 - Failed temporary deletion is recorded as pending and retried; the host never broadens the deletion target.
 - Chromium `SingletonLock`, `SingletonSocket`, and `SingletonCookie` markers block deletion even if a launcher PID has already exited.
 
@@ -49,9 +53,12 @@ Anyone with access to the user's operating-system account may still read or modi
 - URLs are limited to absolute, credential-free `http` and `https` URLs up to 8192 bytes.
 - Browser arguments are fixed and passed separately through Go's `exec.Command`; no shell command is built or invoked.
 - ScopeNest refuses duplicate launches while a recorded process is alive.
-- A close request can kill only the exact `os.Process` object launched by the current host instance. Reconciled PIDs from older instances are never killed.
+- On Windows, the browser is created suspended, assigned to a private Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and resumed only after assignment succeeds. Closing uses that owned Job Object.
+- On Linux, the browser is created in a dedicated process group. Closing signals only that owned group, first with `SIGTERM` and then with `SIGKILL` after a bounded grace period.
+- Process authority exists only in the current host's in-memory managed-process object. Persisted and reconciled PIDs are never reopened or killed, even if the numeric PID currently exists.
+- The process watcher waits for the owned Job Object or process group to empty before changing lifecycle metadata. It also verifies both the current in-memory owner and persisted PID before committing a stopped state.
 
-Chromium can create subprocesses or transfer work to an existing process. ScopeNest intentionally avoids broad process-name killing or PID-tree heuristics that could terminate unrelated work. Closing the isolated browser window normally is the safest fallback.
+ScopeNest never uses broad process-name killing or heuristic descendant discovery. Chromium descendants created within the owned Job Object or process group remain controlled, including ordinary launcher handoff. A transfer to an already-running external Chromium process cannot be adopted safely; profile-lock markers continue to block deletion, and closing that browser window normally is the fallback.
 
 ## Extension permissions
 

@@ -7,15 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/scopenest/scopenest/native-host/internal/model"
 	"github.com/scopenest/scopenest/native-host/internal/security"
 )
 
 type Store struct {
-	root     string
-	metaPath string
-	mu       sync.Mutex
+	root        string
+	metaPath    string
+	lockPath    string
+	lockTimeout time.Duration
+	mu          sync.Mutex
 }
 
 func New(root string) (*Store, error) {
@@ -26,7 +29,12 @@ func New(root string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(abs, "containers"), 0700); err != nil {
 		return nil, fmt.Errorf("create application data directory: %w", err)
 	}
-	return &Store{root: abs, metaPath: filepath.Join(abs, "containers.json")}, nil
+	return &Store{
+		root:        abs,
+		metaPath:    filepath.Join(abs, "containers.json"),
+		lockPath:    filepath.Join(abs, "containers.lock"),
+		lockTimeout: 5 * time.Second,
+	}, nil
 }
 
 func (s *Store) Root() string { return s.root }
@@ -41,6 +49,11 @@ func (s *Store) ProfilePath(id string) (string, error) {
 func (s *Store) Load() (model.Database, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := acquireFileLock(s.lockPath, s.lockTimeout)
+	if err != nil {
+		return model.Database{}, err
+	}
+	defer lock.Release()
 	return s.loadUnlocked()
 }
 
@@ -62,12 +75,36 @@ func (s *Store) loadUnlocked() (model.Database, error) {
 	if db.Containers == nil {
 		db.Containers = []model.Container{}
 	}
+	for i := range db.Containers {
+		container := &db.Containers[i]
+		switch container.State {
+		case "":
+			if container.Running {
+				container.State = model.StateRunning
+			} else {
+				container.State = model.StateStopped
+			}
+		case model.StateStopped:
+			container.Running = false
+		case model.StateLaunching:
+			container.Running = false
+		case model.StateRunning:
+			container.Running = true
+		default:
+			return db, fmt.Errorf("container %q has invalid lifecycle state %q", container.ID, container.State)
+		}
+	}
 	return db, nil
 }
 
 func (s *Store) Update(fn func(*model.Database) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := acquireFileLock(s.lockPath, s.lockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	db, err := s.loadUnlocked()
 	if err != nil {
 		return err

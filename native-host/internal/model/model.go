@@ -2,6 +2,12 @@ package model
 
 import "time"
 
+const (
+	StateStopped   = "stopped"
+	StateLaunching = "launching"
+	StateRunning   = "running"
+)
+
 type Container struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
@@ -17,6 +23,9 @@ type Container struct {
 	BrowserExecutable string     `json:"browserExecutable,omitempty"`
 	PID               int        `json:"pid,omitempty"`
 	Running           bool       `json:"running"`
+	State             string     `json:"state"`
+	LaunchToken       string     `json:"launchToken,omitempty"`
+	LaunchReservedAt  *time.Time `json:"launchReservedAt,omitempty"`
 }
 
 type Database struct {

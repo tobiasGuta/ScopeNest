@@ -24,7 +24,7 @@ No shell is involved. The Go host passes every argument separately to the operat
 - Assign a color and optional emoji/icon to each container.
 - Launch a blank window, a manually entered HTTP(S) URL, or the current page.
 - See running state, last launch, selected browser, and exact profile path.
-- Create fresh temporary contexts that are removed after their launched process exits when safe.
+- Create fresh temporary contexts that are removed after their owned browser process tree exits when safe.
 - Retry failed temporary cleanup at host startup or with the cleanup protocol command.
 - Use the polished action popup or the wider Chrome side panel.
 - Detect Chrome, Chromium, Edge, and Brave on Windows and Linux, with a custom executable option.
@@ -34,7 +34,7 @@ No shell is involved. The Go host passes every argument separately to the operat
 ## Architecture
 
 ```text
-┌──────────────────────────────── Chrome / Edge ────────────────────────────────┐
+┌──────────────────────────── Chrome / Edge / Brave ────────────────────────────┐
 │ ScopeNest popup or side panel                                                │
 │   └─ chrome.storage.local (sort/filter/last browser preference only)         │
 │         │ validated, versioned commands                                      │
@@ -43,7 +43,7 @@ No shell is involved. The Go host passes every argument separately to the operat
                                 │ 4-byte little-endian length + strict JSON
 ┌───────────────────────────────▼───────────────────────────────────────────────┐
 │ Go native host (stdio only; no HTTP listener)                                │
-│ validation → command allowlist → metadata store → process manager            │
+│ validation → command allowlist → locked metadata store → process manager     │
 │                                      │ exec(executable, separate args)        │
 └──────────────────────────────────────│────────────────────────────────────────┘
                                        ▼
@@ -51,7 +51,11 @@ No shell is involved. The Go host passes every argument separately to the operat
                     ScopeNest/containers/<random-id>/profile
 ```
 
-The persistent native port lets the host observe browser-process exit while the connection remains alive. A new host invocation reconciles stale process metadata and retries cleanup. ScopeNest will never kill a PID it did not launch during the current native-host process; after a host restart, close that container's browser window normally.
+The persistent native port lets the host observe browser-process exit while the connection remains alive. A new host invocation reconciles stale process metadata and retries cleanup. Chrome, Edge, and additional profiles may each start a host process, so every metadata transaction takes a timed operating-system lock. Launches additionally reserve a container with a unique token before starting the browser.
+
+Process ownership is platform-specific. On Windows, ScopeNest starts the browser suspended, assigns it to a private Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and then resumes it. On Linux, it starts the browser in a dedicated process group. A close request terminates only that in-memory owned Job Object or process group, and the watcher waits for the owned tree to empty before marking the container stopped. Persisted PIDs are status hints only and are never reopened as kill authority. Chromium profile-lock markers are still checked before any profile deletion.
+
+Extension requests use command-specific deadlines: 15 seconds for status and validation reads, 30 seconds for create/update/launch/close operations, and 5 minutes for profile deletion or manual temporary cleanup. The longer destructive-operation deadline accommodates large profiles and Windows antivirus scanning without making routine health checks wait unnecessarily.
 
 ## Repository layout
 
@@ -109,7 +113,7 @@ nnmpnmnmmfoedjeionoopgnbjnepfolh
 
 ### Windows native-host install
 
-Run this from the repository root in PowerShell; it builds and registers the host for Chrome and Edge under the current user:
+Run this from the repository root in PowerShell; it builds and registers the host for Chrome, Edge, and Brave under the current user:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -ExtensionId nnmpnmnmmfoedjeionoopgnbjnepfolh
@@ -123,10 +127,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-window
 
 The installer copies/builds the host under `%LOCALAPPDATA%\ScopeNest\NativeHost`, writes a restricted-origin manifest, and creates only these per-user registrations:
 
-- `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.scopenest.host`
+- `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.scopenest.host` (Chrome and Brave)
 - `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.scopenest.host`
 
-No administrator privileges are required.
+On Windows, Brave uses Chromium's Chrome-compatible native-messaging registry namespace, so its explicit installer option maps to the same key as Chrome. No administrator privileges are required.
 
 ### Linux native-host install
 
@@ -179,7 +183,7 @@ The native host uses the OS user configuration directory:
 - Windows: `%APPDATA%\ScopeNest`
 - Linux: `${XDG_CONFIG_HOME:-$HOME/.config}/ScopeNest`
 
-`containers.json` stores names, colors, icons, timestamps, generated IDs, profile paths, browser selection, and process status. Browser profile content is stored below `containers/<id>/profile`. Metadata is written with restrictive permissions and temp-file-plus-atomic-replace semantics.
+`containers.json` stores names, colors, icons, timestamps, generated IDs, profile paths, browser selection, and process status. Browser profile content is stored below `containers/<id>/profile`. A dedicated `containers.lock` coordinates Chrome, Edge, and other simultaneous native-host processes. Metadata is written with restrictive permissions, a timed OS-level lock, and temp-file-plus-atomic-replace semantics.
 
 The extension stores only UI preferences in `chrome.storage.local`. ScopeNest does not maintain URL history. A URL is sent locally to the native host only when the user explicitly launches it. There is no telemetry, remote listener, analytics, advertising, or external data transfer. The extension does not inject scripts and does not read page content.
 
@@ -200,7 +204,9 @@ go vet ./...
 go test -race ./...
 ```
 
-Linux uses `npm` instead of `npm.cmd`. Go tests cover native-message framing and limits, strict requests, command rejection, URL and input validation, traversal and symlink boundaries, browser argument construction, container creation, metadata persistence/atomic replacement, temporary cleanup, and stale process reconciliation. Extension tests cover protocol construction/parsing, validation, storage, filtering/sorting, and unavailable-host UI state. Tests never launch the user's browser.
+Linux uses `npm` instead of `npm.cmd`. Go tests cover native-message framing and limits, strict requests, command rejection, URL and input validation, traversal and symlink boundaries, browser argument construction, managed child-process termination, launch success, failures after process creation, close behavior, duplicate launches, stale-watcher relaunch races, persisted-PID authority rejection, metadata persistence/atomic replacement, timed file locking, real cross-process updates and launch reservations, temporary cleanup, and stale process reconciliation. Extension tests cover protocol construction/parsing, validation, command-specific timeouts, storage, filtering/sorting, and unavailable-host UI state. Tests launch only test-helper subprocesses, never the user's browser.
+
+The GitHub Actions workflow runs extension checks on Linux and runs Go vet, the complete native-host suite, repeated lifecycle/concurrency tests, and a native-host build on both Windows and Linux. Workflow results appear after the branch is pushed to GitHub.
 
 When editing the protocol, update both `extension/src/shared/protocol.js` and the Go protocol/host packages, then update [docs/native-protocol.md](docs/native-protocol.md). Never write diagnostic text to native-host standard output; stdout is reserved for framed JSON.
 
@@ -224,7 +230,7 @@ Choose **Custom executable…** and provide the full path. On Linux, ensure it i
 
 ### Container says running after its window closed
 
-Press **Retry** or reopen ScopeNest; list/status operations reconcile dead PIDs. Some Chromium launchers hand work to another process and exit early, so state may clear even while a browser window is open. The isolated profile remains valid.
+Press **Retry** or reopen ScopeNest; list/status operations reconcile dead PIDs while profile-lock markers prevent unsafe deletion. ScopeNest waits for every process in its owned Windows Job Object or Linux process group. If an external launcher transfers the profile to an already-running browser outside that ownership boundary, ScopeNest cannot safely adopt or terminate it; close that browser window normally.
 
 ### Temporary cleanup is pending
 
@@ -242,8 +248,8 @@ Verify the configured executable is Chromium-based and that no one has manually 
 - Isolation depends on distinct `--user-data-dir` values. Never manually reuse one profile directory across containers.
 - ScopeNest separates browser storage, not network identity. Sites can still correlate sessions through IP address, TLS/network properties, browser fingerprinting, or account behavior.
 - Extensions, policies, certificate stores, OS keychains, DNS caches, and other system-wide facilities may exist outside an individual profile's isolation boundary.
-- Process ownership does not survive a native-host restart. ScopeNest reconciles status but refuses to kill a process it did not launch in the current host session.
-- Chromium launchers may hand off to another process, which can make precise running-state and immediate temporary cleanup platform-dependent. Cleanup is retried safely.
+- Process ownership is deliberately in-memory. Persisted PIDs are never used to reacquire kill authority after a native-host restart. On Windows, closing the owning host's kill-on-close Job Object also terminates its associated browser tree; on Linux, an unexpected host exit can leave its process group running, in which case the browser must be closed normally.
+- ScopeNest owns descendants created inside its Windows Job Object or Linux process group. It cannot safely adopt an already-running external Chromium process if a launcher transfers the profile outside that boundary. Profile locks prevent deletion and cleanup is retried safely.
 
 ## Uninstallation
 

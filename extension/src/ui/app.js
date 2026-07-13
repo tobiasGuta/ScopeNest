@@ -42,6 +42,7 @@ function button(text, className, action, label = text) {
 }
 
 function renderCard(container) {
+	const launching = container.state === "launching";
   const card = document.createElement("article"); card.className = "container-card"; card.style.setProperty("--container-color", container.color); card.dataset.id = container.id;
   const main = document.createElement("div"); main.className = "card-main";
   const head = document.createElement("div"); head.className = "card-head";
@@ -52,13 +53,14 @@ function renderCard(container) {
   const browser = document.createElement("span"); browser.textContent = browserLabel(container); meta.append(browser);
   const used = document.createElement("span"); used.textContent = `• ${formatDate(container.lastLaunchedAt)}`; meta.append(used);
   if (container.running) { const running = document.createElement("span"); running.className = "badge running"; running.textContent = "Running"; meta.append(running); }
+  if (launching) { const launchingBadge = document.createElement("span"); launchingBadge.className = "badge launching"; launchingBadge.textContent = "Launching"; meta.append(launchingBadge); }
   if (container.temporary) { const temporary = document.createElement("span"); temporary.className = "badge temporary"; temporary.textContent = container.pendingCleanup ? "Cleanup pending" : "Temporary"; meta.append(temporary); }
   title.append(meta); head.append(icon, title);
   const menuButton = button("⋯", "card-menu", (event) => toggleMenu(card, container, event.currentTarget), `Actions for ${container.name}`); menuButton.setAttribute("aria-expanded", "false"); head.append(menuButton); main.append(head);
   const path = document.createElement("p"); path.className = "profile-path"; path.title = container.profilePath; path.textContent = container.profilePath; main.append(path); card.append(main);
   const actions = document.createElement("div"); actions.className = "card-actions";
-  actions.append(button(container.running ? "Running" : "Launch", "button primary", () => launch(container.id, ""), `Launch ${container.name}`), button("Current page", "button secondary", () => openCurrent(container.id), `Open current page in ${container.name}`));
-  actions.firstChild.disabled = container.running; card.append(actions); return card;
+  actions.append(button(container.running ? "Running" : launching ? "Launching" : "Launch", "button primary", () => launch(container.id, ""), `Launch ${container.name}`), button("Current page", "button secondary", () => openCurrent(container.id), `Open current page in ${container.name}`));
+  actions.firstChild.disabled = container.running || launching; actions.lastChild.disabled = launching; card.append(actions); return card;
 }
 
 function toggleMenu(card, container, anchor) {
@@ -76,9 +78,10 @@ function toggleMenu(card, container, anchor) {
 
 function render() {
   setConnection();
-  const options = ["<option value=\"\">Choose container</option>", ...state.containers.filter((c) => !c.running).map((c) => `<option value="${c.id}"></option>`)].join("");
+  const available = state.containers.filter((c) => !c.running && c.state !== "launching");
+  const options = ["<option value=\"\">Choose container</option>", ...available.map((c) => `<option value="${c.id}"></option>`)].join("");
   $("#quick-container").innerHTML = options;
-  [...$("#quick-container").options].slice(1).forEach((option, i) => { option.textContent = state.containers.filter((c) => !c.running)[i].name; });
+  [...$("#quick-container").options].slice(1).forEach((option, i) => { option.textContent = available[i].name; });
   const visible = visibleContainers(state.containers, { query: $("#search").value, filter: $("#filter").value, sort: $("#sort").value });
   $("#container-count").textContent = `${state.containers.length} total`;
   $("#container-list").replaceChildren(...visible.map(renderCard));

@@ -56,6 +56,7 @@ input::placeholder { color: #9893aa; }
 .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 11px; }
 .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 99px; padding: 2px 7px; background: #f2f0f7; color: var(--muted); }
 .badge.running { color: #16745a; background: var(--mint-soft); }.badge.running::before { content: ""; width: 6px; height: 6px; background: var(--mint); border-radius: 50%; }
+.badge.launching { color: #4b36c8; background: var(--brand-soft); }.badge.launching::before { content: ""; width: 7px; height: 7px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .badge.temporary { background: #fff4d9; color: #805f08; }
 .card-menu { border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 5px 8px; font-size: 18px; }.card-menu:hover { background: var(--canvas); }
 .profile-path { margin: 9px 0 0 48px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

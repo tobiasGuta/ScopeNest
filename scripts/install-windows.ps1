@@ -3,8 +3,8 @@ param(
     [ValidatePattern('^[a-p]{32}$')]
     [string]$ExtensionId = 'nnmpnmnmmfoedjeionoopgnbjnepfolh',
     [string]$BinaryPath,
-    [ValidateSet('Chrome', 'Edge')]
-    [string[]]$Browsers = @('Chrome', 'Edge')
+    [ValidateSet('Chrome', 'Edge', 'Brave')]
+    [string[]]$Browsers = @('Chrome', 'Edge', 'Brave')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,6 +58,8 @@ try {
     $registryPaths = @{
         Chrome = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
         Edge = "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$HostName"
+        # Brave uses the Chrome-compatible native-messaging registry namespace on Windows.
+        Brave = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
     }
     foreach ($browser in $Browsers) {
         $key = $registryPaths[$browser]

@@ -20,7 +20,10 @@ import (
 	"github.com/scopenest/scopenest/native-host/internal/store"
 )
 
-const HostVersion = "1.0.0"
+const (
+	HostVersion          = "1.0.3"
+	launchReservationTTL = 2 * time.Minute
+)
 
 var allowedCommands = map[string]bool{
 	"ping": true, "get_status": true, "list_containers": true,
@@ -33,7 +36,8 @@ var allowedCommands = map[string]bool{
 type Host struct {
 	store     *store.Store
 	launcher  browser.Launcher
-	processes map[string]*os.Process
+	processes map[string]browser.Process
+	watcher   func(string, browser.Process)
 	mu        sync.Mutex
 	now       func() time.Time
 }
@@ -69,7 +73,9 @@ type validatePathInput struct {
 }
 
 func New(st *store.Store, launcher browser.Launcher) *Host {
-	return &Host{store: st, launcher: launcher, processes: map[string]*os.Process{}, now: func() time.Time { return time.Now().UTC() }}
+	h := &Host{store: st, launcher: launcher, processes: map[string]browser.Process{}, now: func() time.Time { return time.Now().UTC() }}
+	h.watcher = h.watch
+	return h
 }
 
 func DecodeRequest(payload []byte) (protocol.Request, error) {
@@ -194,11 +200,34 @@ func (h *Host) status() (any, error) {
 
 func (h *Host) reconcile() error {
 	return h.store.Update(func(db *model.Database) error {
+		now := h.now()
 		for i := range db.Containers {
 			c := &db.Containers[i]
-			if c.Running && c.PID > 0 && !processExists(c.PID) {
-				c.Running, c.PID = false, 0
-				c.UpdatedAt = h.now()
+			switch c.State {
+			case model.StateLaunching:
+				reservedAt := c.UpdatedAt
+				if c.LaunchReservedAt != nil {
+					reservedAt = *c.LaunchReservedAt
+				}
+				if now.Sub(reservedAt) > launchReservationTTL {
+					inUse, err := h.store.ProfileInUse(c.ID)
+					if err != nil {
+						return err
+					}
+					if !inUse {
+						setStopped(c, now)
+					}
+				}
+			case model.StateRunning:
+				if c.PID <= 0 || !processExists(c.PID) {
+					inUse, err := h.store.ProfileInUse(c.ID)
+					if err != nil {
+						return err
+					}
+					if !inUse {
+						setStopped(c, now)
+					}
+				}
 			}
 		}
 		return nil
@@ -215,7 +244,7 @@ func (h *Host) list(runningOnly bool) ([]model.Container, error) {
 	}
 	items := make([]model.Container, 0, len(db.Containers))
 	for _, c := range db.Containers {
-		if !runningOnly || c.Running {
+		if !runningOnly || c.State == model.StateRunning {
 			items = append(items, c)
 		}
 	}
@@ -260,7 +289,7 @@ func (h *Host) create(in containerInput, temporary bool) (model.Container, error
 		return model.Container{}, err
 	}
 	now := h.now()
-	c := model.Container{ID: id, Name: in.Name, Color: in.Color, Icon: in.Icon, CreatedAt: now, UpdatedAt: now, Temporary: temporary, ProfilePath: profile, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable}
+	c := model.Container{ID: id, Name: in.Name, Color: in.Color, Icon: in.Icon, CreatedAt: now, UpdatedAt: now, Temporary: temporary, ProfilePath: profile, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, State: model.StateStopped}
 	if err := h.store.Update(func(db *model.Database) error { db.Containers = append(db.Containers, c); return nil }); err != nil {
 		_ = h.store.RemoveContainerDirectory(id)
 		return model.Container{}, err
@@ -300,83 +329,178 @@ func (h *Host) launch(in launchInput) (model.Container, error) {
 	if err != nil {
 		return model.Container{}, fail("INVALID_URL", "%v", err)
 	}
-	if err := h.reconcile(); err != nil {
-		return model.Container{}, err
-	}
-	db, err := h.store.Load()
+	c, token, err := h.reserveLaunch(in.ID)
 	if err != nil {
 		return model.Container{}, err
 	}
-	var c *model.Container
-	for i := range db.Containers {
-		if db.Containers[i].ID == in.ID {
-			copy := db.Containers[i]
-			c = &copy
-			break
-		}
-	}
-	if c == nil {
-		return model.Container{}, fail("NOT_FOUND", "container was not found")
-	}
-	if c.Running {
-		return *c, fail("ALREADY_RUNNING", "container is already running")
-	}
+	releaseReservation := func() { _ = h.releaseLaunchReservation(c.ID, token) }
+
 	profile, err := h.store.EnsureProfile(c.ID)
 	if err != nil {
+		releaseReservation()
 		return model.Container{}, err
 	}
 	executable, err := security.ValidateBrowserExecutable(c.BrowserExecutable, c.BrowserType)
 	if err != nil {
+		releaseReservation()
 		return model.Container{}, fail("INVALID_BROWSER_PATH", "%v", err)
 	}
 	args, err := browser.Arguments(profile, validatedURL)
 	if err != nil {
+		releaseReservation()
 		return model.Container{}, fail("INVALID_URL", "%v", err)
 	}
 	process, err := h.launcher.Start(executable, args)
 	if err != nil {
+		releaseReservation()
 		return model.Container{}, fail("LAUNCH_FAILED", "browser could not be started: %v", err)
 	}
 	h.mu.Lock()
 	h.processes[c.ID] = process
 	h.mu.Unlock()
 	now := h.now()
-	c.Running, c.PID, c.LastLaunchedAt, c.UpdatedAt = true, process.Pid, &now, now
+	var launched model.Container
 	if err := h.store.Update(func(db *model.Database) error {
 		for i := range db.Containers {
-			if db.Containers[i].ID == c.ID {
-				db.Containers[i] = *c
+			container := &db.Containers[i]
+			if container.ID == c.ID {
+				if container.State != model.StateLaunching || container.LaunchToken != token {
+					return fail("LAUNCH_RESERVATION_LOST", "container launch reservation is no longer valid")
+				}
+				container.State = model.StateRunning
+				container.Running = true
+				container.PID = process.PID()
+				container.LaunchToken = ""
+				container.LaunchReservedAt = nil
+				container.LastLaunchedAt = &now
+				container.UpdatedAt = now
+				container.PendingCleanup = false
+				launched = *container
 				return nil
 			}
 		}
 		return fail("NOT_FOUND", "container was not found")
 	}); err != nil {
-		_ = process.Kill()
+		h.mu.Lock()
+		if h.processes[c.ID] == process {
+			delete(h.processes, c.ID)
+		}
+		h.mu.Unlock()
+		_ = process.Terminate()
+		_ = process.Wait()
 		return model.Container{}, err
 	}
-	go h.watch(c.ID, process)
-	return *c, nil
+	go h.watcher(c.ID, process)
+	return launched, nil
 }
 
-func (h *Host) watch(id string, process *os.Process) {
-	_, _ = process.Wait()
+func (h *Host) reserveLaunch(id string) (model.Container, string, error) {
 	h.mu.Lock()
-	if h.processes[id] == process {
-		delete(h.processes, id)
-	}
+	ownedProcess := h.processes[id]
 	h.mu.Unlock()
-	temporary := false
-	_ = h.store.Update(func(db *model.Database) error {
+	if ownedProcess != nil && ownedProcess.Running() {
+		return model.Container{}, "", fail("ALREADY_RUNNING", "container is already running")
+	}
+	token, err := security.NewID()
+	if err != nil {
+		return model.Container{}, "", err
+	}
+	now := h.now()
+	var reserved model.Container
+	err = h.store.Update(func(db *model.Database) error {
 		for i := range db.Containers {
-			if db.Containers[i].ID == id {
-				db.Containers[i].Running, db.Containers[i].PID = false, 0
-				db.Containers[i].UpdatedAt = h.now()
-				temporary = db.Containers[i].Temporary
+			container := &db.Containers[i]
+			if container.ID != id {
+				continue
+			}
+			if container.State == model.StateLaunching {
+				reservedAt := container.UpdatedAt
+				if container.LaunchReservedAt != nil {
+					reservedAt = *container.LaunchReservedAt
+				}
+				if now.Sub(reservedAt) <= launchReservationTTL {
+					return fail("ALREADY_LAUNCHING", "container launch is already in progress")
+				}
+				setStopped(container, now)
+			}
+			if container.State == model.StateRunning || container.Running {
+				if container.PID > 0 && processExists(container.PID) {
+					return fail("ALREADY_RUNNING", "container is already running")
+				}
+				setStopped(container, now)
+			}
+			inUse, err := h.store.ProfileInUse(container.ID)
+			if err != nil {
+				return err
+			}
+			if inUse {
+				return fail("PROFILE_IN_USE", "container profile is already in use")
+			}
+			container.State = model.StateLaunching
+			container.Running = false
+			container.PID = 0
+			container.LaunchToken = token
+			container.LaunchReservedAt = &now
+			container.UpdatedAt = now
+			container.PendingCleanup = false
+			reserved = *container
+			return nil
+		}
+		return fail("NOT_FOUND", "container was not found")
+	})
+	return reserved, token, err
+}
+
+func (h *Host) releaseLaunchReservation(id, token string) error {
+	return h.store.Update(func(db *model.Database) error {
+		for i := range db.Containers {
+			container := &db.Containers[i]
+			if container.ID == id && container.State == model.StateLaunching && container.LaunchToken == token {
+				setStopped(container, h.now())
 				return nil
 			}
 		}
 		return nil
 	})
+}
+
+func setStopped(container *model.Container, now time.Time) {
+	container.State = model.StateStopped
+	container.Running = false
+	container.PID = 0
+	container.LaunchToken = ""
+	container.LaunchReservedAt = nil
+	container.UpdatedAt = now
+}
+
+func (h *Host) watch(id string, process browser.Process) {
+	_ = process.Wait()
+
+	h.mu.Lock()
+	if h.processes[id] != process {
+		h.mu.Unlock()
+		return
+	}
+	delete(h.processes, id)
+	h.mu.Unlock()
+
+	temporary := false
+	_ = h.store.Update(func(db *model.Database) error {
+		for i := range db.Containers {
+			container := &db.Containers[i]
+			if container.ID == id && container.State == model.StateRunning && container.PID == process.PID() {
+				setStopped(container, h.now())
+				temporary = container.Temporary
+				return nil
+			}
+			if container.ID == id && container.State == model.StateStopped && container.PID == 0 {
+				temporary = container.Temporary
+				return nil
+			}
+		}
+		return nil
+	})
+
 	if temporary {
 		_, _ = h.deleteTemporary(id)
 	}
@@ -392,7 +516,7 @@ func (h *Host) close(id string) (model.Container, error) {
 	if process == nil {
 		return model.Container{}, fail("PROCESS_NOT_OWNED", "this host session did not launch the container process; close its browser window instead")
 	}
-	if err := process.Kill(); err != nil {
+	if err := process.Terminate(); err != nil {
 		return model.Container{}, fail("CLOSE_FAILED", "container process could not be terminated")
 	}
 	db, err := h.store.Load()
@@ -411,42 +535,32 @@ func (h *Host) delete(id string) (map[string]any, error) {
 	if err := security.ValidateID(id); err != nil {
 		return nil, fail("INVALID_CONTAINER_ID", "%v", err)
 	}
-	db, err := h.store.Load()
-	if err != nil {
-		return nil, err
-	}
-	found := false
-	for _, c := range db.Containers {
-		if c.ID == id {
-			found = true
-			if c.Running {
-				return nil, fail("CONTAINER_RUNNING", "close the container before deleting it")
-			}
-			break
-		}
-	}
-	if !found {
-		return nil, fail("NOT_FOUND", "container was not found")
-	}
-	inUse, err := h.store.ProfileInUse(id)
-	if err != nil {
-		return nil, err
-	}
-	if inUse {
-		return nil, fail("PROFILE_IN_USE", "the browser profile is still in use")
-	}
-	if err := h.store.RemoveContainerDirectory(id); err != nil {
-		return nil, fail("DELETE_FAILED", "container profile could not be removed: %v", err)
-	}
 	if err := h.store.Update(func(db *model.Database) error {
-		items := db.Containers[:0]
-		for _, c := range db.Containers {
-			if c.ID != id {
-				items = append(items, c)
+		for i := range db.Containers {
+			container := &db.Containers[i]
+			if container.ID != id {
+				continue
 			}
+			if container.State == model.StateLaunching {
+				return fail("CONTAINER_BUSY", "container launch is in progress")
+			}
+			if container.State == model.StateRunning || container.Running {
+				return fail("CONTAINER_RUNNING", "close the container before deleting it")
+			}
+			inUse, err := h.store.ProfileInUse(id)
+			if err != nil {
+				return err
+			}
+			if inUse {
+				return fail("PROFILE_IN_USE", "the browser profile is still in use")
+			}
+			if err := h.store.RemoveContainerDirectory(id); err != nil {
+				return fail("DELETE_FAILED", "container profile could not be removed: %v", err)
+			}
+			db.Containers = append(db.Containers[:i], db.Containers[i+1:]...)
+			return nil
 		}
-		db.Containers = items
-		return nil
+		return fail("NOT_FOUND", "container was not found")
 	}); err != nil {
 		return nil, err
 	}
@@ -454,43 +568,46 @@ func (h *Host) delete(id string) (map[string]any, error) {
 }
 
 func (h *Host) deleteTemporary(id string) (bool, error) {
-	inUse, err := h.store.ProfileInUse(id)
+	removed := false
+	var outcomeErr error
+	err := h.store.Update(func(db *model.Database) error {
+		for i := range db.Containers {
+			container := &db.Containers[i]
+			if container.ID != id {
+				continue
+			}
+			if container.State != model.StateStopped || container.Running {
+				return fail("CONTAINER_BUSY", "temporary container is not stopped")
+			}
+			inUse, err := h.store.ProfileInUse(id)
+			if err != nil {
+				return err
+			}
+			if inUse {
+				container.PendingCleanup = true
+				outcomeErr = fail("PROFILE_IN_USE", "temporary profile is still in use")
+				return nil
+			}
+			if err := h.store.RemoveContainerDirectory(id); err != nil {
+				container.PendingCleanup = true
+				outcomeErr = err
+				return nil
+			}
+			db.Containers = append(db.Containers[:i], db.Containers[i+1:]...)
+			removed = true
+			return nil
+		}
+		// Another host may already have completed cleanup.
+		removed = true
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
-	if inUse {
-		_ = h.store.Update(func(db *model.Database) error {
-			for i := range db.Containers {
-				if db.Containers[i].ID == id {
-					db.Containers[i].PendingCleanup = true
-				}
-			}
-			return nil
-		})
-		return false, fail("PROFILE_IN_USE", "temporary profile is still in use")
+	if outcomeErr != nil {
+		return false, outcomeErr
 	}
-	if err := h.store.RemoveContainerDirectory(id); err != nil {
-		_ = h.store.Update(func(db *model.Database) error {
-			for i := range db.Containers {
-				if db.Containers[i].ID == id {
-					db.Containers[i].PendingCleanup = true
-				}
-			}
-			return nil
-		})
-		return false, err
-	}
-	err = h.store.Update(func(db *model.Database) error {
-		items := db.Containers[:0]
-		for _, c := range db.Containers {
-			if c.ID != id {
-				items = append(items, c)
-			}
-		}
-		db.Containers = items
-		return nil
-	})
-	return err == nil, err
+	return removed, nil
 }
 
 func (h *Host) cleanup() (map[string]any, error) {
@@ -503,7 +620,7 @@ func (h *Host) cleanup() (map[string]any, error) {
 	}
 	cleaned, pending := []string{}, []string{}
 	for _, c := range db.Containers {
-		if c.Temporary && !c.Running {
+		if c.Temporary && c.State == model.StateStopped && !c.Running {
 			ok, err := h.deleteTemporary(c.ID)
 			if err == nil && ok {
 				cleaned = append(cleaned, c.ID)

@@ -7,6 +7,33 @@ export const COMMANDS = Object.freeze([
   "cleanup_temporary_containers", "get_running_containers", "validate_browser_path",
 ]);
 
+export const REQUEST_TIMEOUTS = Object.freeze({
+  fast: 15_000,
+  standard: 30_000,
+  destructive: 300_000,
+});
+
+const COMMAND_TIMEOUTS = Object.freeze({
+  ping: REQUEST_TIMEOUTS.fast,
+  get_status: REQUEST_TIMEOUTS.fast,
+  list_containers: REQUEST_TIMEOUTS.fast,
+  get_running_containers: REQUEST_TIMEOUTS.fast,
+  validate_browser_path: REQUEST_TIMEOUTS.fast,
+  create_container: REQUEST_TIMEOUTS.standard,
+  create_temporary_container: REQUEST_TIMEOUTS.standard,
+  update_container: REQUEST_TIMEOUTS.standard,
+  launch_container: REQUEST_TIMEOUTS.standard,
+  close_container: REQUEST_TIMEOUTS.standard,
+  delete_container: REQUEST_TIMEOUTS.destructive,
+  cleanup_temporary_containers: REQUEST_TIMEOUTS.destructive,
+});
+
+export function timeoutForCommand(command) {
+  const timeout = COMMAND_TIMEOUTS[command];
+  if (!COMMANDS.includes(command) || !Number.isSafeInteger(timeout)) throw new Error(`Unsupported command: ${command}`);
+  return timeout;
+}
+
 export function createRequest(command, data = undefined, requestId = crypto.randomUUID()) {
   if (!COMMANDS.includes(command)) throw new Error(`Unsupported command: ${command}`);
   if (typeof requestId !== "string" || !requestId || requestId.length > 128) throw new Error("Invalid request ID");
