@@ -2,11 +2,13 @@ package browser
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/scopenest/scopenest/native-host/internal/security"
 )
@@ -30,11 +32,44 @@ type Process interface {
 	Terminate() error
 }
 
-func Arguments(profilePath, rawURL string) ([]string, error) {
+type ProxyOptions struct {
+	Enabled     bool
+	Protocol    string
+	Host        string
+	Port        int
+	BypassRules []string
+}
+
+func Arguments(profilePath, rawURL string, proxy ProxyOptions) ([]string, error) {
 	if profilePath == "" || !filepath.IsAbs(profilePath) {
 		return nil, errors.New("profile path must be absolute")
 	}
 	args := []string{"--user-data-dir=" + profilePath, "--profile-directory=Default", "--new-window", "--no-first-run"}
+
+	if proxy.Enabled {
+		// e.g. --proxy-server="http=127.0.0.1:8080;https=127.0.0.1:8080"
+		// or socks5://127.0.0.1:1080
+		var serverArg string
+		if proxy.Protocol == "socks4" || proxy.Protocol == "socks5" {
+			serverArg = fmt.Sprintf("%s://%s:%d", proxy.Protocol, proxy.Host, proxy.Port)
+		} else {
+			addr := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
+			// Chrome supports scheme-specific proxy configuration
+			serverArg = fmt.Sprintf("http=%s;https=%s", addr, addr)
+		}
+
+		args = append(args, "--proxy-server="+serverArg)
+
+		// Chrome QUIC does not traverse proxies reliably, and many proxies intercepting traffic
+		// do not support UDP/QUIC interception, so disable it when using a proxy.
+		args = append(args, "--disable-quic")
+
+		if len(proxy.BypassRules) > 0 {
+			// e.g. --proxy-bypass-list="*.local,192.168.1.1/24"
+			args = append(args, "--proxy-bypass-list="+strings.Join(proxy.BypassRules, ","))
+		}
+	}
+
 	if rawURL != "" {
 		validated, err := security.ValidateURL(rawURL)
 		if err != nil {

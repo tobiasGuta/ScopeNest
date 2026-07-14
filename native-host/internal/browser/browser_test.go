@@ -4,13 +4,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestArgumentsAreSeparatedAndStable(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "profile with spaces")
-	args, err := Arguments(profile, "https://example.com/path?q=hello%20world")
+	args, err := Arguments(profile, "https://example.com/path?q=hello%20world", ProxyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,17 +21,85 @@ func TestArgumentsAreSeparatedAndStable(t *testing.T) {
 	if args[len(args)-1] != "https://example.com/path?q=hello%20world" {
 		t.Fatalf("URL argument was altered: %#v", args)
 	}
+
+	// Ensure proxy and quic flags are strictly absent in non-proxy mode
+	for _, arg := range args {
+		if arg == "--disable-quic" || strings.HasPrefix(arg, "--proxy-server") || strings.HasPrefix(arg, "--proxy-bypass-list") {
+			t.Fatalf("unexpected proxy-related argument found in non-proxy mode: %s", arg)
+		}
+	}
 }
 
 func TestArgumentsRejectUnsafeURLSchemes(t *testing.T) {
-	if _, err := Arguments(filepath.Join(t.TempDir(), "profile"), "file:///etc/passwd"); err == nil {
+	if _, err := Arguments(filepath.Join(t.TempDir(), "profile"), "file:///etc/passwd", ProxyOptions{}); err == nil {
 		t.Fatal("accepted file URL")
 	}
 }
 
 func TestArgumentsRequireAbsoluteProfile(t *testing.T) {
-	if _, err := Arguments("relative/profile", ""); err == nil {
+	if _, err := Arguments("relative/profile", "", ProxyOptions{}); err == nil {
 		t.Fatal("accepted relative profile path")
+	}
+}
+
+func TestArgumentsWithProxyOptions(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "proxy_profile")
+
+	// Test HTTP proxy without bypass rules
+	args, err := Arguments(profile, "", ProxyOptions{
+		Enabled:  true,
+		Protocol: "http",
+		Host:     "127.0.0.1",
+		Port:     8080,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundServer := false
+	foundQuic := false
+	for _, arg := range args {
+		if arg == "--proxy-server=http=127.0.0.1:8080;https=127.0.0.1:8080" {
+			foundServer = true
+		}
+		if arg == "--disable-quic" {
+			foundQuic = true
+		}
+	}
+	if !foundServer {
+		t.Fatalf("missing or incorrect proxy-server arg: %#v", args)
+	}
+	if !foundQuic {
+		t.Fatalf("missing disable-quic arg: %#v", args)
+	}
+
+	// Test SOCKS5 with bypass rules
+	args, err = Arguments(profile, "", ProxyOptions{
+		Enabled:     true,
+		Protocol:    "socks5",
+		Host:        "192.168.1.1",
+		Port:        1080,
+		BypassRules: []string{"*.local", "localhost"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundServer = false
+	foundBypass := false
+	for _, arg := range args {
+		if arg == "--proxy-server=socks5://192.168.1.1:1080" {
+			foundServer = true
+		}
+		if arg == "--proxy-bypass-list=*.local,localhost" {
+			foundBypass = true
+		}
+	}
+	if !foundServer {
+		t.Fatalf("missing or incorrect proxy-server arg for socks5: %#v", args)
+	}
+	if !foundBypass {
+		t.Fatalf("missing or incorrect proxy-bypass-list arg: %#v", args)
 	}
 }
 

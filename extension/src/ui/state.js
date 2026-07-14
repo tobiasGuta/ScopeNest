@@ -16,3 +16,11 @@ export function connectionView(status) {
   if (status.connected) return { tone: "success", label: `Native host ${status.version || "connected"}` };
   return { tone: "danger", label: status.error || "Native host unavailable" };
 }
+
+export function certificateTrustView(certificate) {
+  if (certificate?.trustState === "trusted") return { handled: true, verified: true, label: "Trusted" };
+  if (certificate?.trustState === "manual_trust_acknowledged_unverified") {
+    return { handled: true, verified: false, label: "Manual trust acknowledged (unverified)" };
+  }
+  return { handled: false, verified: false, label: "Untrusted" };
+}

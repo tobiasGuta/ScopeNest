@@ -1,18 +1,28 @@
 package host
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/scopenest/scopenest/native-host/internal/browser"
+	"github.com/scopenest/scopenest/native-host/internal/certstore"
 	"github.com/scopenest/scopenest/native-host/internal/model"
 	"github.com/scopenest/scopenest/native-host/internal/protocol"
+	"github.com/scopenest/scopenest/native-host/internal/security"
 	"github.com/scopenest/scopenest/native-host/internal/store"
 )
 
@@ -171,7 +181,7 @@ func testHost(t *testing.T) (*Host, *store.Store, string) {
 	if err := os.WriteFile(executable, []byte("test browser placeholder"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	return New(st, nil), st, executable
+	return New(st, nil, nil), st, executable
 }
 
 func request(t *testing.T, command string, data any) protocol.Request {
@@ -300,7 +310,7 @@ func TestHostProcessLaunchReservationHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(st, nil)
+	h := New(st, nil, nil)
 	_, _, reserveErr := h.reserveLaunch(os.Getenv("SCOPENEST_HOST_HELPER_ID"))
 	result := "reserved"
 	if reserveErr != nil {
@@ -882,7 +892,7 @@ func TestLaunchReservationBlocksAnotherHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2 := New(secondStore, nil)
+	h2 := New(secondStore, nil, nil)
 
 	reserved, token, err := h1.reserveLaunch(container.ID)
 	if err != nil {
@@ -924,7 +934,7 @@ func TestConcurrentLaunchReservationsHaveSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2 := New(secondStore, nil)
+	h2 := New(secondStore, nil, nil)
 
 	type result struct {
 		token string
@@ -1044,7 +1054,7 @@ func TestStaleLaunchReservationCanBeRecovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock = clock.Add(launchReservationTTL + time.Second)
-	h2 := New(st, nil)
+	h2 := New(st, nil, nil)
 	h2.now = func() time.Time { return clock }
 	reserved, secondToken, err := h2.reserveLaunch(container.ID)
 	if err != nil {
@@ -1095,5 +1105,263 @@ func TestLaunchFailureReleasesReservation(t *testing.T) {
 	}
 	if db.Containers[0].State != model.StateStopped || db.Containers[0].LaunchToken != "" || db.Containers[0].LaunchReservedAt != nil || db.Containers[0].Running {
 		t.Fatalf("failed launch left a reservation behind: %#v", db.Containers[0])
+	}
+}
+
+type recordingLauncher struct {
+	mu      sync.Mutex
+	args    []string
+	calls   int
+	process browser.Process
+}
+
+func (l *recordingLauncher) Start(_ string, args []string) (browser.Process, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	l.args = append([]string(nil), args...)
+	return l.process, nil
+}
+
+func (l *recordingLauncher) snapshot() (int, []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls, append([]string(nil), l.args...)
+}
+
+func proxyLaunchHost(t *testing.T, behavior string) (*Host, *store.Store, *recordingLauncher, string, *int) {
+	t.Helper()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "chrome")
+	if os.PathSeparator == '\\' {
+		executable += ".exe"
+	}
+	if err := os.WriteFile(executable, []byte("test browser placeholder"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	containerID, _ := security.NewID()
+	proxyID, _ := security.NewID()
+	profile, _ := st.EnsureProfile(containerID)
+	now := time.Now().UTC()
+	err = st.Update(func(db *model.Database) error {
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: proxyID, Name: "Proxy", Protocol: "http", Host: "127.0.0.1", Port: 65530, UnavailableBehavior: behavior, HealthCheck: model.ProxyHealthCheck{Enabled: true, TimeoutMs: 100}})
+		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Proxy launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "proxy", ProxyProfileID: proxyID})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &recordingLauncher{process: newControlledProcess(9010, true)}
+	h := New(st, launcher, nil)
+	h.watcher = func(string, browser.Process) {}
+	checks := 0
+	h.proxyDial = func(string, string, time.Duration) (net.Conn, error) {
+		checks++
+		return nil, errors.New("listener unavailable")
+	}
+	return h, st, launcher, containerID, &checks
+}
+
+func containsArgument(args []string, prefix string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProxyUnavailableWarnChecksListenerWarnsAndLaunchesWithProxyNoDirectFallback(t *testing.T) {
+	h, _, launcher, id, checks := proxyLaunchHost(t, "warn")
+	launched, err := h.launch(launchInput{ID: id, URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if *checks != 1 || calls != 1 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	if launched.ProxyWarning == nil || launched.ProxyWarning.Code != "PROXY_LISTENER_UNAVAILABLE" || launched.DirectFallbackUsed {
+		t.Fatalf("unexpected launch metadata: %#v", launched)
+	}
+	if !containsArgument(args, "--proxy-server=") || !containsArgument(args, "--disable-quic") {
+		t.Fatalf("proxy arguments missing: %v", args)
+	}
+}
+
+func TestProxyUnavailableBlockChecksListenerPreventsStartupAndReturnsStructuredError(t *testing.T) {
+	h, st, launcher, id, checks := proxyLaunchHost(t, "block")
+	response := h.Handle(request(t, "launch_container", launchInput{ID: id, URL: "https://example.com"}))
+	if response.Success || response.ErrorCode != "PROXY_LISTENER_UNAVAILABLE" || response.Error == nil {
+		t.Fatalf("unexpected structured response: %#v", response)
+	}
+	calls, _ := launcher.snapshot()
+	if *checks != 1 || calls != 0 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	db, _ := st.Load()
+	if db.Containers[0].State != model.StateStopped {
+		t.Fatalf("reservation not released: %#v", db.Containers[0])
+	}
+}
+
+func TestProxyUnavailableDirectChecksListenerLaunchesWithoutProxyOrQUICAndReportsFallback(t *testing.T) {
+	h, _, launcher, id, checks := proxyLaunchHost(t, "direct")
+	launched, err := h.launch(launchInput{ID: id, URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if *checks != 1 || calls != 1 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	if !launched.DirectFallbackUsed || launched.ProxyWarning != nil {
+		t.Fatalf("fallback not reported: %#v", launched)
+	}
+	if containsArgument(args, "--proxy-server=") || containsArgument(args, "--disable-quic") {
+		t.Fatalf("direct fallback retained proxy arguments: %v", args)
+	}
+}
+
+func TestLinuxManualTrustAcknowledgmentBindsCertificateFingerprintPlatformAndTimestamp(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	id, _ := security.NewID()
+	fingerprint := "AA:BB"
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates = append(db.Certificates, model.Certificate{ID: id, SHA256Fingerprint: fingerprint, TrustState: model.CertificateTrustUntrusted})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := New(st, failingLauncher{}, nil)
+	h.platform = "linux"
+	h.now = func() time.Time { return now }
+	response := h.Handle(request(t, "acknowledge_manual_certificate_trust", acknowledgeManualTrustInput{ID: id, SHA256Fingerprint: fingerprint, Platform: "linux"}))
+	if !response.Success {
+		t.Fatalf("acknowledgment failed: %#v", response)
+	}
+	certificate := response.Data.(model.Certificate)
+	ack := certificate.ManualTrustAcknowledgment
+	if certificate.Trusted || certificate.TrustState != model.CertificateTrustManualAcknowledgedUnverified || ack == nil || ack.CertificateID != id || ack.SHA256Fingerprint != fingerprint || ack.Platform != "linux" || !ack.AcknowledgedAt.Equal(now) {
+		t.Fatalf("invalid acknowledgment: %#v", certificate)
+	}
+}
+
+func TestLinuxManualTrustAcknowledgmentFingerprintChangeInvalidatesState(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	id, _ := security.NewID()
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates = append(db.Certificates, model.Certificate{ID: id, SHA256Fingerprint: "AA", TrustState: model.CertificateTrustManualAcknowledgedUnverified, ManualTrustAcknowledgment: &model.ManualTrustAcknowledgment{CertificateID: id, SHA256Fingerprint: "AA", Platform: "linux", AcknowledgedAt: now}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(db *model.Database) error { db.Certificates[0].SHA256Fingerprint = "BB"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := db.Certificates[0]
+	if certificate.ManualTrustAcknowledgment != nil || certificate.TrustState != model.CertificateTrustUntrusted || certificate.Trusted {
+		t.Fatalf("stale acknowledgment remained valid: %#v", certificate)
+	}
+}
+
+type ownershipTrustStore struct {
+	already  bool
+	installs int
+	removals int
+}
+
+func (*ownershipTrustStore) Scope() string   { return "test" }
+func (*ownershipTrustStore) Supported() bool { return true }
+func (s *ownershipTrustStore) Install([]byte, string) (bool, error) {
+	s.installs++
+	return s.already, nil
+}
+func (s *ownershipTrustStore) Remove([]byte, string) error { s.removals++; return nil }
+
+func importHostTestCertificate(t *testing.T, st *store.Store, trust certstore.TrustStore) (*Host, model.Certificate) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Host test"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := certstore.NewManager(st, trust)
+	staged, err := manager.Import("Host CA", base64.StdEncoding.EncodeToString(der), len(der))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := manager.CommitImport(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(st, failingLauncher{}, manager), certificate
+}
+
+func TestInstallCertificateTrustNeverClaimsPreexistingCertificate(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{already: true}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	updated, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Trusted || updated.InstalledByScopeNest {
+		t.Fatalf("pre-existing certificate ownership was claimed: %#v", updated)
+	}
+}
+
+func TestRemoveCertificateTrustNeverRemovesUnownedOrReferencedCertificate(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_NOT_INSTALLED_BY_SCOPENEST" {
+		t.Fatalf("unexpected unowned error: %v", err)
+	}
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates[0].InstalledByScopeNest = true
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: "proxy", CertificateIDs: []string{certificate.ID}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_REFERENCE_IN_USE" {
+		t.Fatalf("unexpected reference error: %v", err)
+	}
+	if trust.removals != 0 {
+		t.Fatal("trust store removal was called")
+	}
+}
+
+func TestRemoveCertificateTrustReReadsAndReFingerprintsManagedDER(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if err := st.Update(func(db *model.Database) error { db.Certificates[0].InstalledByScopeNest = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(st.Root(), "resources", "certificates", certificate.ID, "certificate.der")
+	if err := os.WriteFile(path, []byte("tampered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_READ_FAILED" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if trust.removals != 0 {
+		t.Fatal("tampered DER reached trust store removal")
 	}
 }
