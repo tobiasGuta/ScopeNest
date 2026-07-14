@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	HostVersion          = "1.0.3"
+	HostVersion          = "1.0.4"
 	launchReservationTTL = 2 * time.Minute
 )
 
@@ -34,12 +34,23 @@ var allowedCommands = map[string]bool{
 }
 
 type Host struct {
-	store     *store.Store
-	launcher  browser.Launcher
-	processes map[string]browser.Process
-	watcher   func(string, browser.Process)
-	mu        sync.Mutex
-	now       func() time.Time
+	store                  *store.Store
+	launcher               browser.Launcher
+	processes              map[string]browser.Process
+	watcher                func(string, browser.Process)
+	mu                     sync.Mutex
+	now                    func() time.Time
+	startupCleanup         func() error
+	startupCleanupOnce     sync.Once
+	startupCleanupMu       sync.RWMutex
+	startupCleanupMetadata startupCleanupMetadata
+}
+
+type startupCleanupMetadata struct {
+	State      string     `json:"state"`
+	StartedAt  *time.Time `json:"startedAt,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	ErrorCode  string     `json:"errorCode,omitempty"`
 }
 
 type containerInput struct {
@@ -73,9 +84,51 @@ type validatePathInput struct {
 }
 
 func New(st *store.Store, launcher browser.Launcher) *Host {
-	h := &Host{store: st, launcher: launcher, processes: map[string]browser.Process{}, now: func() time.Time { return time.Now().UTC() }}
+	h := &Host{
+		store:                  st,
+		launcher:               launcher,
+		processes:              map[string]browser.Process{},
+		now:                    func() time.Time { return time.Now().UTC() },
+		startupCleanupMetadata: startupCleanupMetadata{State: "pending"},
+	}
 	h.watcher = h.watch
+	h.startupCleanup = func() error {
+		_, err := h.cleanup()
+		return err
+	}
 	return h
+}
+
+// StartStartupCleanup schedules the startup cleanup exactly once and returns
+// immediately so native messaging remains responsive while profiles are removed.
+func (h *Host) StartStartupCleanup() {
+	h.startupCleanupOnce.Do(func() {
+		startedAt := h.now()
+		h.startupCleanupMu.Lock()
+		h.startupCleanupMetadata = startupCleanupMetadata{State: "running", StartedAt: &startedAt}
+		h.startupCleanupMu.Unlock()
+
+		go func() {
+			err := h.startupCleanup()
+			finishedAt := h.now()
+
+			h.startupCleanupMu.Lock()
+			h.startupCleanupMetadata.FinishedAt = &finishedAt
+			if err != nil {
+				h.startupCleanupMetadata.State = "failed"
+				h.startupCleanupMetadata.ErrorCode = "INTERNAL_ERROR"
+			} else {
+				h.startupCleanupMetadata.State = "completed"
+			}
+			h.startupCleanupMu.Unlock()
+		}()
+	})
+}
+
+func (h *Host) startupCleanupStatus() startupCleanupMetadata {
+	h.startupCleanupMu.RLock()
+	defer h.startupCleanupMu.RUnlock()
+	return h.startupCleanupMetadata
 }
 
 func DecodeRequest(payload []byte) (protocol.Request, error) {
@@ -118,7 +171,7 @@ func (h *Host) dispatch(req protocol.Request) (any, error) {
 		if err := requireEmptyData(req.Data); err != nil {
 			return nil, err
 		}
-		return map[string]any{"hostVersion": HostVersion, "protocolVersion": protocol.Version}, nil
+		return map[string]any{"hostVersion": HostVersion, "protocolVersion": protocol.Version, "startupCleanup": h.startupCleanupStatus()}, nil
 	case "get_status":
 		if err := requireEmptyData(req.Data); err != nil {
 			return nil, err
@@ -195,7 +248,7 @@ func (h *Host) status() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"hostVersion": HostVersion, "protocolVersion": protocol.Version, "dataDirectory": h.store.Root(), "containerCount": len(db.Containers), "detectedBrowsers": browser.Detect()}, nil
+	return map[string]any{"hostVersion": HostVersion, "protocolVersion": protocol.Version, "dataDirectory": h.store.Root(), "containerCount": len(db.Containers), "detectedBrowsers": browser.Detect(), "startupCleanup": h.startupCleanupStatus()}, nil
 }
 
 func (h *Host) reconcile() error {
@@ -219,19 +272,30 @@ func (h *Host) reconcile() error {
 					}
 				}
 			case model.StateRunning:
-				if c.PID <= 0 || !processExists(c.PID) {
-					inUse, err := h.store.ProfileInUse(c.ID)
-					if err != nil {
-						return err
-					}
-					if !inUse {
-						setStopped(c, now)
-					}
+				if h.ownsMatchingProcess(c.ID, c.PID) {
+					continue
+				}
+				inUse, err := h.store.ProfileInUse(c.ID)
+				if err != nil {
+					return err
+				}
+				if !inUse {
+					setStopped(c, now)
 				}
 			}
 		}
 		return nil
 	})
+}
+
+func (h *Host) ownsMatchingProcess(id string, pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	h.mu.Lock()
+	process := h.processes[id]
+	h.mu.Unlock()
+	return process != nil && process.PID() == pid
 }
 
 func (h *Host) list(runningOnly bool) ([]model.Container, error) {
@@ -423,18 +487,19 @@ func (h *Host) reserveLaunch(id string) (model.Container, string, error) {
 				}
 				setStopped(container, now)
 			}
-			if container.State == model.StateRunning || container.Running {
-				if container.PID > 0 && processExists(container.PID) {
-					return fail("ALREADY_RUNNING", "container is already running")
-				}
-				setStopped(container, now)
-			}
+			wasRunning := container.State == model.StateRunning || container.Running
 			inUse, err := h.store.ProfileInUse(container.ID)
 			if err != nil {
 				return err
 			}
 			if inUse {
+				if wasRunning {
+					return fail("ALREADY_RUNNING", "container profile is already in use")
+				}
 				return fail("PROFILE_IN_USE", "container profile is already in use")
+			}
+			if wasRunning {
+				setStopped(container, now)
 			}
 			container.State = model.StateLaunching
 			container.Running = false
@@ -544,7 +609,8 @@ func (h *Host) delete(id string) (map[string]any, error) {
 			if container.State == model.StateLaunching {
 				return fail("CONTAINER_BUSY", "container launch is in progress")
 			}
-			if container.State == model.StateRunning || container.Running {
+			wasRunning := container.State == model.StateRunning || container.Running
+			if wasRunning && h.ownsMatchingProcess(container.ID, container.PID) {
 				return fail("CONTAINER_RUNNING", "close the container before deleting it")
 			}
 			inUse, err := h.store.ProfileInUse(id)
@@ -552,7 +618,13 @@ func (h *Host) delete(id string) (map[string]any, error) {
 				return err
 			}
 			if inUse {
+				if wasRunning {
+					return fail("CONTAINER_RUNNING", "close the container before deleting it")
+				}
 				return fail("PROFILE_IN_USE", "the browser profile is still in use")
+			}
+			if wasRunning {
+				setStopped(container, h.now())
 			}
 			if err := h.store.RemoveContainerDirectory(id); err != nil {
 				return fail("DELETE_FAILED", "container profile could not be removed: %v", err)

@@ -21,10 +21,18 @@ func main() {
 		os.Exit(1)
 	}
 	h := host.New(st, browser.ExecLauncher{})
-	_ = h.Handle(protocol.Request{Version: 1, RequestID: "startup", Command: "cleanup_temporary_containers"})
+	runMessageLoop(os.Stdin, os.Stdout, h)
+}
 
+type messageHost interface {
+	Handle(protocol.Request) protocol.Response
+	StartStartupCleanup()
+}
+
+func runMessageLoop(in io.Reader, out io.Writer, h messageHost) {
+	startupCleanupScheduled := false
 	for {
-		payload, readErr := protocol.ReadMessage(os.Stdin)
+		payload, readErr := protocol.ReadMessage(in)
 		if errors.Is(readErr, io.EOF) {
 			return
 		}
@@ -34,18 +42,22 @@ func main() {
 			if errors.Is(readErr, protocol.ErrMessageTooLarge) {
 				code = "MESSAGE_TOO_LARGE"
 			}
-			_ = protocol.WriteMessage(os.Stdout, protocol.NewError(req, code, readErr.Error()))
+			_ = protocol.WriteMessage(out, protocol.NewError(req, code, readErr.Error()))
 			return
 		}
 		req, decodeErr := host.DecodeRequest(payload)
 		if decodeErr != nil {
 			// Keep malformed request internals out of logs; the response remains structured.
-			_ = protocol.WriteMessage(os.Stdout, protocol.NewError(req, host.ErrorCode(decodeErr), decodeErr.Error()))
+			_ = protocol.WriteMessage(out, protocol.NewError(req, host.ErrorCode(decodeErr), decodeErr.Error()))
 			continue
 		}
 		response := h.Handle(req)
-		if err := protocol.WriteMessage(os.Stdout, response); err != nil {
+		if err := protocol.WriteMessage(out, response); err != nil {
 			return
+		}
+		if !startupCleanupScheduled {
+			startupCleanupScheduled = true
+			h.StartStartupCleanup()
 		}
 	}
 }

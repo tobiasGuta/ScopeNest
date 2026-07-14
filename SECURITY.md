@@ -16,6 +16,8 @@ ScopeNest isolates Chromium browser state by giving each container a different m
 
 The Chrome extension is an authorized client, not a trusted source of input. The native companion validates every request even though Chrome enforces `allowed_origins`. The native host has the same filesystem and process privileges as the local user; installing or selecting an untrusted host/browser binary defeats that boundary.
 
+GitHub Actions dependencies are pinned to immutable full commit SHAs. Dependabot checks the `github-actions` ecosystem weekly so action upgrades arrive as explicit, reviewable pull requests instead of mutable tag changes.
+
 ## Native-host protections
 
 - Standard input/output Native Messaging only; no HTTP server, remote listener, telemetry, or updater.
@@ -42,6 +44,7 @@ The native manifest must restrict `allowed_origins` to the installed ScopeNest e
 - Stale launch reservations are recovered only after a bounded timeout and only when Chromium profile-lock markers show that the profile is not in use.
 - Permanent and temporary deletion recheck lifecycle state and remove metadata/profile data inside the same locked transaction, preventing launch-versus-delete races.
 - Failed temporary deletion is recorded as pending and retried; the host never broadens the deletion target.
+- Startup cleanup is scheduled only after the first valid native response is written, runs asynchronously, and reports bounded state metadata without exposing filesystem errors.
 - Chromium `SingletonLock`, `SingletonSocket`, and `SingletonCookie` markers block deletion even if a launcher PID has already exited.
 
 Anyone with access to the user's operating-system account may still read or modify browser profiles. Full disk encryption and a protected OS account are recommended.
@@ -56,6 +59,7 @@ Anyone with access to the user's operating-system account may still read or modi
 - On Windows, the browser is created suspended, assigned to a private Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and resumed only after assignment succeeds. Closing uses that owned Job Object.
 - On Linux, the browser is created in a dedicated process group. Closing signals only that owned group, first with `SIGTERM` and then with `SIGKILL` after a bounded grace period.
 - Process authority exists only in the current host's in-memory managed-process object. Persisted and reconciled PIDs are never reopened or killed, even if the numeric PID currently exists.
+- A persisted PID is never sufficient evidence that an unowned container is running. Reconciliation, relaunch, and deletion use Chromium profile-lock markers as the authoritative signal, preventing unrelated PID reuse from preserving stale state.
 - The process watcher waits for the owned Job Object or process group to empty before changing lifecycle metadata. It also verifies both the current in-memory owner and persisted PID before committing a stopped state.
 
 ScopeNest never uses broad process-name killing or heuristic descendant discovery. Chromium descendants created within the owned Job Object or process group remain controlled, including ordinary launcher handoff. A transfer to an already-running external Chromium process cannot be adopted safely; profile-lock markers continue to block deletion, and closing that browser window normally is the fallback.

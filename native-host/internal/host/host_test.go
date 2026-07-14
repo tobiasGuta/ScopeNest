@@ -183,6 +183,84 @@ func request(t *testing.T, command string, data any) protocol.Request {
 	return protocol.Request{Version: 1, RequestID: "test", Command: command, Data: raw}
 }
 
+func cleanupState(t *testing.T, response protocol.Response) string {
+	t.Helper()
+	if !response.Success {
+		t.Fatalf("status request failed: %#v", response)
+	}
+	data, ok := response.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected status data: %#v", response.Data)
+	}
+	metadata, ok := data["startupCleanup"].(startupCleanupMetadata)
+	if !ok {
+		t.Fatalf("missing startup cleanup metadata: %#v", data)
+	}
+	return metadata.State
+}
+
+func TestPingRemainsResponsiveDuringStartupCleanup(t *testing.T) {
+	h, _, _ := testHost(t)
+	if state := cleanupState(t, h.Handle(protocol.Request{Version: 1, RequestID: "pending", Command: "ping"})); state != "pending" {
+		t.Fatalf("initial cleanup state = %q, want pending", state)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	h.startupCleanup = func() error {
+		close(started)
+		<-release
+		return nil
+	}
+	startReturned := make(chan struct{})
+	go func() {
+		h.StartStartupCleanup()
+		close(startReturned)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("startup cleanup did not start")
+	}
+	select {
+	case <-startReturned:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("startup cleanup scheduling did not return promptly")
+	}
+
+	response := make(chan protocol.Response, 1)
+	go func() {
+		response <- h.Handle(protocol.Request{Version: 1, RequestID: "during-cleanup", Command: "ping"})
+	}()
+	select {
+	case ping := <-response:
+		if state := cleanupState(t, ping); state != "running" {
+			t.Fatalf("cleanup state during cleanup = %q, want running", state)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("ping blocked behind startup cleanup")
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	deadline := time.Now().Add(time.Second)
+	for {
+		state := cleanupState(t, h.Handle(protocol.Request{Version: 1, RequestID: "after-cleanup", Command: "ping"}))
+		if state == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cleanup state = %q, want completed", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Scheduling is idempotent after completion.
+	h.StartStartupCleanup()
+}
+
 func exitedHelperProcess(t *testing.T) browser.Process {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=TestWatcherHelperProcess")
@@ -332,6 +410,153 @@ func TestProcessStateReconciliationClearsStalePID(t *testing.T) {
 	items := response.Data.([]model.Container)
 	if len(items) != 1 || items[0].ID != c.ID || items[0].Running || items[0].PID != 0 {
 		t.Fatalf("stale state not reconciled: %#v", items)
+	}
+}
+
+func TestReconcileClearsUnownedReusedPIDWithoutProfileLock(t *testing.T) {
+	h, st, executable := testHost(t)
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Reused PID", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	if err := st.Update(func(db *model.Database) error {
+		db.Containers[0].State = model.StateRunning
+		db.Containers[0].Running = true
+		db.Containers[0].PID = os.Getpid()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].ID != container.ID || db.Containers[0].State != model.StateStopped || db.Containers[0].Running || db.Containers[0].PID != 0 {
+		t.Fatalf("unowned reused PID preserved false running state: %#v", db)
+	}
+}
+
+func TestReconcileLeavesMatchingOwnedProcessToWatcher(t *testing.T) {
+	h, st, executable := testHost(t)
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Owned", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	process := newControlledProcess(os.Getpid(), false)
+	h.mu.Lock()
+	h.processes[container.ID] = process
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.processes, container.ID)
+		h.mu.Unlock()
+	}()
+	if err := st.Update(func(db *model.Database) error {
+		db.Containers[0].State = model.StateRunning
+		db.Containers[0].Running = true
+		db.Containers[0].PID = process.PID()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].State != model.StateRunning || !db.Containers[0].Running || db.Containers[0].PID != process.PID() {
+		t.Fatalf("reconciliation overrode matching owned process: %#v", db)
+	}
+}
+
+func TestReconcileKeepsUnownedContainerWhileProfileIsLocked(t *testing.T) {
+	h, st, executable := testHost(t)
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Externally locked", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	if err := os.WriteFile(filepath.Join(container.ProfilePath, "SingletonLock"), []byte("owned"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(db *model.Database) error {
+		db.Containers[0].State = model.StateRunning
+		db.Containers[0].Running = true
+		db.Containers[0].PID = 2_000_000_002
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].State != model.StateRunning || !db.Containers[0].Running {
+		t.Fatalf("reconciliation cleared profile-locked container: %#v", db)
+	}
+}
+
+func TestReusedUnownedPIDDoesNotBlockRelaunch(t *testing.T) {
+	h, st, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Relaunch reused PID", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	if err := st.Update(func(db *model.Database) error {
+		db.Containers[0].State = model.StateRunning
+		db.Containers[0].Running = true
+		db.Containers[0].PID = os.Getpid()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	launched := h.Handle(request(t, "launch_container", launchInput{ID: container.ID}))
+	if !launched.Success {
+		t.Fatalf("unowned reused PID blocked relaunch: %#v", launched)
+	}
+	_ = process.Terminate()
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "reused PID relaunch cleanup")
+}
+
+func TestReusedUnownedPIDDoesNotBlockDeletion(t *testing.T) {
+	h, st, executable := testHost(t)
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Delete reused PID", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	if err := st.Update(func(db *model.Database) error {
+		db.Containers[0].State = model.StateRunning
+		db.Containers[0].Running = true
+		db.Containers[0].PID = os.Getpid()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := h.Handle(request(t, "delete_container", idInput{ID: container.ID}))
+	if !deleted.Success {
+		t.Fatalf("unowned reused PID blocked deletion: %#v", deleted)
+	}
+	if _, err := os.Stat(container.ProfilePath); !os.IsNotExist(err) {
+		t.Fatalf("deleted stale container profile still exists: %v", err)
 	}
 }
 

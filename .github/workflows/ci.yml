@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
       - run: npm test
@@ -33,8 +33,8 @@ jobs:
       run:
         working-directory: native-host
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: native-host/go.mod
           cache-dependency-path: native-host/go.mod
@@ -55,5 +55,5 @@ jobs:
       - run: go test -count=1 ./...
       - if: runner.os == 'Linux'
         run: go test -race -count=1 ./...
-      - run: go test -count=5 ./internal/browser ./internal/host ./internal/store
+      - run: go test -count=5 ./cmd/scopenest-host ./internal/browser ./internal/host ./internal/store
       - run: go build -buildvcs=false -trimpath ./cmd/scopenest-host

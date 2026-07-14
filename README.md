@@ -25,7 +25,7 @@ No shell is involved. The Go host passes every argument separately to the operat
 - Launch a blank window, a manually entered HTTP(S) URL, or the current page.
 - See running state, last launch, selected browser, and exact profile path.
 - Create fresh temporary contexts that are removed after their owned browser process tree exits when safe.
-- Retry failed temporary cleanup at host startup or with the cleanup protocol command.
+- Retry failed temporary cleanup asynchronously after the first native response, or on demand with the cleanup protocol command.
 - Use the polished action popup or the wider Chrome side panel.
 - Detect Chrome, Chromium, Edge, and Brave on Windows and Linux, with a custom executable option.
 - Keep preferences in `chrome.storage.local` and authoritative container metadata in the local host.
@@ -51,9 +51,9 @@ No shell is involved. The Go host passes every argument separately to the operat
                     ScopeNest/containers/<random-id>/profile
 ```
 
-The persistent native port lets the host observe browser-process exit while the connection remains alive. A new host invocation reconciles stale process metadata and retries cleanup. Chrome, Edge, and additional profiles may each start a host process, so every metadata transaction takes a timed operating-system lock. Launches additionally reserve a container with a unique token before starting the browser.
+The persistent native port lets the host observe browser-process exit while the connection remains alive. A new host invocation writes its first valid native-message response immediately, then retries temporary cleanup in the background. `ping` and `get_status` report that cleanup as `pending`, `running`, `completed`, or `failed`. Chrome, Edge, and additional profiles may each start a host process, so every metadata transaction takes a timed operating-system lock. Launches additionally reserve a container with a unique token before starting the browser.
 
-Process ownership is platform-specific. On Windows, ScopeNest starts the browser suspended, assigns it to a private Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and then resumes it. On Linux, it starts the browser in a dedicated process group. A close request terminates only that in-memory owned Job Object or process group, and the watcher waits for the owned tree to empty before marking the container stopped. Persisted PIDs are status hints only and are never reopened as kill authority. Chromium profile-lock markers are still checked before any profile deletion.
+Process ownership is platform-specific. On Windows, ScopeNest starts the browser suspended, assigns it to a private Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and then resumes it. On Linux, it starts the browser in a dedicated process group. A close request terminates only that in-memory owned Job Object or process group, and the watcher waits for the owned tree to empty before marking the container stopped. Persisted PIDs are status hints only and are never reopened as kill authority or accepted as proof that an unowned container is running. For unowned containers, Chromium profile-lock markers are the authoritative lifecycle signal and are checked again before deletion or relaunch.
 
 Extension requests use command-specific deadlines: 15 seconds for status and validation reads, 30 seconds for create/update/launch/close operations, and 5 minutes for profile deletion or manual temporary cleanup. The longer destructive-operation deadline accommodates large profiles and Windows antivirus scanning without making routine health checks wait unnecessarily.
 
@@ -204,7 +204,7 @@ go vet ./...
 go test -race ./...
 ```
 
-Linux uses `npm` instead of `npm.cmd`. Go tests cover native-message framing and limits, strict requests, command rejection, URL and input validation, traversal and symlink boundaries, browser argument construction, managed child-process termination, launch success, failures after process creation, close behavior, duplicate launches, stale-watcher relaunch races, persisted-PID authority rejection, metadata persistence/atomic replacement, timed file locking, real cross-process updates and launch reservations, temporary cleanup, and stale process reconciliation. Extension tests cover protocol construction/parsing, validation, command-specific timeouts, storage, filtering/sorting, and unavailable-host UI state. Tests launch only test-helper subprocesses, never the user's browser.
+Linux uses `npm` instead of `npm.cmd`. Go tests cover native-message framing and limits, prompt first-message handling during deferred startup cleanup, strict requests, command rejection, URL and input validation, traversal and symlink boundaries, browser argument construction, managed child-process termination, launch success, failures after process creation, close behavior, duplicate launches, stale-watcher relaunch races, persisted-PID authority rejection and PID reuse, metadata persistence/atomic replacement, timed file locking, real cross-process updates and launch reservations, temporary cleanup, and stale process reconciliation. Extension tests cover protocol construction/parsing, validation, command-specific timeouts, storage, filtering/sorting, and unavailable-host UI state. Tests launch only test-helper subprocesses, never the user's browser.
 
 The GitHub Actions workflow runs extension checks on Linux and runs Go vet, the complete native-host suite, repeated lifecycle/concurrency tests, and a native-host build on both Windows and Linux. Workflow results appear after the branch is pushed to GitHub.
 
@@ -230,7 +230,7 @@ Choose **Custom executable…** and provide the full path. On Linux, ensure it i
 
 ### Container says running after its window closed
 
-Press **Retry** or reopen ScopeNest; list/status operations reconcile dead PIDs while profile-lock markers prevent unsafe deletion. ScopeNest waits for every process in its owned Windows Job Object or Linux process group. If an external launcher transfers the profile to an already-running browser outside that ownership boundary, ScopeNest cannot safely adopt or terminate it; close that browser window normally.
+Press **Retry** or reopen ScopeNest. For processes owned by the current host, ScopeNest waits for every process in its Windows Job Object or Linux process group. After a host restart, persisted PIDs are ignored as proof of ownership because operating systems can reuse them; unowned state is reconciled from Chromium profile-lock markers instead. If an external launcher transfers the profile to an already-running browser outside ScopeNest's ownership boundary, close that browser window normally.
 
 ### Temporary cleanup is pending
 
