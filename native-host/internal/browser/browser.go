@@ -49,15 +49,20 @@ func Arguments(profilePath, rawURL string, proxy ProxyOptions) ([]string, error)
 	args := []string{"--user-data-dir=" + profilePath, "--profile-directory=Default", "--new-window", "--no-first-run"}
 
 	if proxy.Enabled {
-		// e.g. --proxy-server="http=127.0.0.1:8080;https=127.0.0.1:8080"
+		// e.g. --proxy-server="http=http://127.0.0.1:8080;https=http://127.0.0.1:8080"
 		// or socks5://127.0.0.1:1080
 		addr := net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port))
 		var serverArg string
 		if proxy.Protocol == "socks4" || proxy.Protocol == "socks5" {
 			serverArg = fmt.Sprintf("%s://%s", proxy.Protocol, addr)
 		} else {
+			scheme := "http"
+			if proxy.Protocol == "https" {
+				scheme = "https"
+			}
+			proxyURL := fmt.Sprintf("%s://%s", scheme, addr)
 			// Chrome supports scheme-specific proxy configuration
-			serverArg = fmt.Sprintf("http=%s;https=%s", addr, addr)
+			serverArg = fmt.Sprintf("http=%s;https=%s", proxyURL, proxyURL)
 		}
 
 		args = append(args, "--proxy-server="+serverArg)

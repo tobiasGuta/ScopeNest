@@ -96,45 +96,35 @@ func (h *Host) installCertificateTrust(id string) (model.Certificate, error) {
 		return model.Certificate{}, err
 	}
 	var target model.Certificate
-	db, err := h.store.Load()
-	if err != nil {
-		return model.Certificate{}, err
-	}
-	found := false
-	for _, c := range db.Certificates {
-		if c.ID == id {
-			target = c
-			found = true
-			break
-		}
-	}
-	if !found {
-		return model.Certificate{}, fail("NOT_FOUND", "certificate not found")
-	}
-
-	der, err := h.certManager.ReadCertificateVerified(id, target.SHA256Fingerprint)
-	if err != nil {
-		return model.Certificate{}, fail("CERTIFICATE_READ_FAILED", "Failed to read certificate bytes: %v", err)
-	}
-	wasTrusted, err := h.certManager.Trust.Verify(der, target.SHA256Fingerprint)
-	if err != nil {
-		return model.Certificate{}, fail("CERTIFICATE_TRUST_VERIFY_FAILED", "Failed to verify certificate trust: %v", err)
-	}
-
+	var der []byte
+	var wasTrusted bool
 	if err := h.store.Update(func(db *model.Database) error {
 		for i := range db.Certificates {
-			if db.Certificates[i].ID == id {
-				if db.Certificates[i].SHA256Fingerprint != target.SHA256Fingerprint {
-					return fail("CERTIFICATE_FINGERPRINT_MISMATCH", "certificate metadata changed during trust installation")
-				}
-				db.Certificates[i].TrustState = model.CertificateTrustInstalling
-				db.Certificates[i].TrustOperationID = token
-				db.Certificates[i].TrustOperationFingerprint = target.SHA256Fingerprint
-				db.Certificates[i].TrustOperationWasTrusted = wasTrusted
-				db.Certificates[i].TrustError = ""
-				db.Certificates[i].UpdatedAt = h.now()
-				return nil
+			certificate := &db.Certificates[i]
+			if certificate.ID != id {
+				continue
 			}
+			if trustOperationPending(*certificate) {
+				return fail("CERTIFICATE_TRUST_OPERATION_PENDING", "certificate trust operation is pending")
+			}
+			var readErr error
+			der, readErr = h.certManager.ReadCertificateVerified(id, certificate.SHA256Fingerprint)
+			if readErr != nil {
+				return fail("CERTIFICATE_READ_FAILED", "Failed to read certificate bytes: %v", readErr)
+			}
+			var verifyErr error
+			wasTrusted, verifyErr = h.certManager.Trust.Verify(der, certificate.SHA256Fingerprint)
+			if verifyErr != nil {
+				return fail("CERTIFICATE_TRUST_VERIFY_FAILED", "Failed to verify certificate trust: %v", verifyErr)
+			}
+			target = *certificate
+			certificate.TrustState = model.CertificateTrustInstalling
+			certificate.TrustOperationID = token
+			certificate.TrustOperationFingerprint = certificate.SHA256Fingerprint
+			certificate.TrustOperationWasTrusted = wasTrusted
+			certificate.TrustError = ""
+			certificate.UpdatedAt = h.now()
+			return nil
 		}
 		return fail("NOT_FOUND", "certificate not found during trust preparation")
 	}); err != nil {
@@ -198,47 +188,35 @@ func (h *Host) removeCertificateTrust(id string) (model.Certificate, error) {
 		return model.Certificate{}, err
 	}
 	var target model.Certificate
-	db, err := h.store.Load()
-	if err != nil {
-		return model.Certificate{}, err
-	}
-	found := false
-	for _, c := range db.Certificates {
-		if c.ID == id {
-			target = c
-			found = true
-			break
-		}
-	}
-	if !found {
-		return model.Certificate{}, fail("NOT_FOUND", "certificate not found")
-	}
-
-	if !target.InstalledByScopeNest {
-		return model.Certificate{}, fail("CERTIFICATE_NOT_INSTALLED_BY_SCOPENEST", "Refusing to remove a certificate that was not installed by ScopeNest")
-	}
-	if err := certificateReferenceError(db, id); err != nil {
-		return model.Certificate{}, err
-	}
-
-	der, err := h.certManager.ReadCertificateVerified(id, target.SHA256Fingerprint)
-	if err != nil {
-		return model.Certificate{}, fail("CERTIFICATE_READ_FAILED", "Failed to read certificate bytes: %v", err)
-	}
+	var der []byte
 	if err := h.store.Update(func(db *model.Database) error {
 		for i := range db.Certificates {
-			if db.Certificates[i].ID == id {
-				if db.Certificates[i].SHA256Fingerprint != target.SHA256Fingerprint {
-					return fail("CERTIFICATE_FINGERPRINT_MISMATCH", "certificate metadata changed during trust removal")
-				}
-				db.Certificates[i].TrustState = model.CertificateTrustRemoving
-				db.Certificates[i].TrustOperationID = token
-				db.Certificates[i].TrustOperationFingerprint = target.SHA256Fingerprint
-				db.Certificates[i].TrustOperationWasTrusted = true
-				db.Certificates[i].TrustError = ""
-				db.Certificates[i].UpdatedAt = h.now()
-				return nil
+			certificate := &db.Certificates[i]
+			if certificate.ID != id {
+				continue
 			}
+			if trustOperationPending(*certificate) {
+				return fail("CERTIFICATE_TRUST_OPERATION_PENDING", "certificate trust operation is pending")
+			}
+			if !certificate.InstalledByScopeNest {
+				return fail("CERTIFICATE_NOT_INSTALLED_BY_SCOPENEST", "Refusing to remove a certificate that was not installed by ScopeNest")
+			}
+			if err := certificateReferenceError(*db, id); err != nil {
+				return err
+			}
+			var readErr error
+			der, readErr = h.certManager.ReadCertificateVerified(id, certificate.SHA256Fingerprint)
+			if readErr != nil {
+				return fail("CERTIFICATE_READ_FAILED", "Failed to read certificate bytes: %v", readErr)
+			}
+			target = *certificate
+			certificate.TrustState = model.CertificateTrustRemoving
+			certificate.TrustOperationID = token
+			certificate.TrustOperationFingerprint = certificate.SHA256Fingerprint
+			certificate.TrustOperationWasTrusted = true
+			certificate.TrustError = ""
+			certificate.UpdatedAt = h.now()
+			return nil
 		}
 		return fail("NOT_FOUND", "certificate not found during trust preparation")
 	}); err != nil {
@@ -280,6 +258,12 @@ func (h *Host) removeCertificateTrust(id string) (model.Certificate, error) {
 	})
 
 	return updated, err
+}
+
+func trustOperationPending(certificate model.Certificate) bool {
+	return certificate.TrustOperationID != "" ||
+		certificate.TrustState == model.CertificateTrustInstalling ||
+		certificate.TrustState == model.CertificateTrustRemoving
 }
 
 func (h *Host) markCertificateTrustError(id, token, message string) error {
@@ -357,35 +341,48 @@ func (h *Host) deleteCertificate(id string) (map[string]any, error) {
 		return nil, fail("INVALID_CERTIFICATE_ID", "%v", err)
 	}
 
-	if err := h.validateCertificateDeletion(id); err != nil {
+	operationID, err := security.NewID()
+	if err != nil {
 		return nil, err
 	}
-	var stagedPath string
-	var finalPath string
-	if h.certManager != nil {
-		var err error
-		certRoot := filepath.Join(h.store.Root(), "resources", "certificates")
-		finalPath, err = security.ResolveWithin(certRoot, filepath.Join(certRoot, id))
-		if err != nil {
-			return nil, fail("CERTIFICATE_DELETE_FAILED", "certificate path could not be resolved")
-		}
-		stageID, err := security.NewID()
-		if err != nil {
-			return nil, err
-		}
-		stagedPath, err = security.ResolveWithin(certRoot, filepath.Join(certRoot, ".delete-"+stageID))
-		if err != nil {
-			return nil, fail("CERTIFICATE_DELETE_FAILED", "certificate staging path could not be resolved")
-		}
-		if err := os.Rename(finalPath, stagedPath); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, fail("CERTIFICATE_DELETE_FAILED", "certificate resource could not be staged for deletion: %v", err)
-			}
-			stagedPath = ""
-		}
+	certRoot := filepath.Join(h.store.Root(), "resources", "certificates")
+	sourcePath, err := security.ResolveWithin(certRoot, filepath.Join(certRoot, id))
+	if err != nil {
+		return nil, fail("CERTIFICATE_DELETE_FAILED", "certificate path could not be resolved")
 	}
-	err := h.store.Update(func(db *model.Database) error {
-		if err := validateCertificateDeletionInDB(*db, id); err != nil {
+	stagedPath, err := security.ResolveWithin(certRoot, filepath.Join(certRoot, ".delete-"+id+"-"+operationID))
+	if err != nil {
+		return nil, fail("CERTIFICATE_DELETE_FAILED", "certificate staging path could not be resolved")
+	}
+	now := h.now()
+	libraryOnly := false
+	err = h.store.Update(func(db *model.Database) error {
+		certificate, err := validateCertificateDeletionInDBExcept(*db, id, "")
+		if err != nil {
+			return err
+		}
+		libraryOnly = certificate.Trusted && !certificate.InstalledByScopeNest
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{
+			CertificateID: id, OperationID: operationID, SourceDirectory: sourcePath,
+			StagedDirectory: stagedPath, State: "deleting", CreatedAt: now, UpdatedAt: now,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	renamed := false
+	if err := os.Rename(sourcePath, stagedPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			_ = h.markCertificateDeletionError(operationID, err.Error())
+			return nil, fail("CERTIFICATE_DELETE_FAILED", "certificate resource could not be staged for deletion: %v", err)
+		}
+	} else {
+		renamed = true
+		_ = syncParentBestEffort(stagedPath)
+	}
+	err = h.store.Update(func(db *model.Database) error {
+		if _, err := validateCertificateDeletionInDBExcept(*db, id, operationID); err != nil {
 			return err
 		}
 		for i := range db.Certificates {
@@ -397,18 +394,28 @@ func (h *Host) deleteCertificate(id string) (map[string]any, error) {
 		return fail("NOT_FOUND", "certificate was not found")
 	})
 	if err != nil {
-		if stagedPath != "" && finalPath != "" {
-			_ = os.Rename(stagedPath, finalPath)
+		if renamed {
+			if restoreErr := os.Rename(stagedPath, sourcePath); restoreErr != nil {
+				_ = h.markCertificateDeletionError(operationID, restoreErr.Error())
+			} else {
+				_ = syncParentBestEffort(sourcePath)
+				_ = h.removeCertificateDeletionOp(operationID)
+			}
 		}
 		return nil, err
 	}
-	if stagedPath != "" {
+	if renamed {
 		if err := os.RemoveAll(stagedPath); err != nil {
+			_ = h.markCertificateDeletionError(operationID, err.Error())
 			return nil, fail("CERTIFICATE_DELETE_FAILED", "staged certificate resource could not be finalized: %v", err)
 		}
+		_ = syncParentBestEffort(stagedPath)
+	}
+	if err := h.removeCertificateDeletionOp(operationID); err != nil {
+		return nil, err
 	}
 
-	return map[string]any{"deleted": true, "id": id}, nil
+	return map[string]any{"deleted": true, "id": id, "windowsTrustUnchanged": libraryOnly}, nil
 }
 
 func (h *Host) validateCertificateDeletion(id string) error {
@@ -416,10 +423,15 @@ func (h *Host) validateCertificateDeletion(id string) error {
 	if err != nil {
 		return err
 	}
-	return validateCertificateDeletionInDB(db, id)
+	_, err = validateCertificateDeletionInDBExcept(db, id, "")
+	return err
 }
 
-func validateCertificateDeletionInDB(db model.Database, id string) error {
+func validateCertificateDeletionInDB(db model.Database, id string) (model.Certificate, error) {
+	return validateCertificateDeletionInDBExcept(db, id, "")
+}
+
+func validateCertificateDeletionInDBExcept(db model.Database, id, allowedOperationID string) (model.Certificate, error) {
 	var certificate *model.Certificate
 	for i := range db.Certificates {
 		if db.Certificates[i].ID == id {
@@ -428,15 +440,35 @@ func validateCertificateDeletionInDB(db model.Database, id string) error {
 		}
 	}
 	if certificate == nil {
-		return fail("NOT_FOUND", "certificate was not found")
+		return model.Certificate{}, fail("NOT_FOUND", "certificate was not found")
 	}
-	if certificate.Trusted || certificate.InstalledByScopeNest || certificate.TrustState == model.CertificateTrustTrusted || certificate.TrustState == model.CertificateTrustInstalling || certificate.TrustState == model.CertificateTrustRemoving {
-		return fail("CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST", "remove certificate trust before deleting it")
+	if certificate.TrustState == model.CertificateTrustInstalling || certificate.TrustState == model.CertificateTrustRemoving {
+		return model.Certificate{}, fail("CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST", "remove certificate trust before deleting it")
+	}
+	if certificate.InstalledByScopeNest {
+		return model.Certificate{}, fail("CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST", "remove certificate trust before deleting it")
+	}
+	if certificate.Trusted && certificate.InstalledByScopeNest {
+		return model.Certificate{}, fail("CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST", "remove certificate trust before deleting it")
+	}
+	if certificate.TrustState == model.CertificateTrustTrusted && certificate.InstalledByScopeNest {
+		return model.Certificate{}, fail("CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST", "remove certificate trust before deleting it")
 	}
 	if certificate.TrustOperationID != "" {
-		return fail("CERTIFICATE_TRUST_OPERATION_PENDING", "certificate trust operation is pending")
+		return model.Certificate{}, fail("CERTIFICATE_TRUST_OPERATION_PENDING", "certificate trust operation is pending")
 	}
-	return certificateReferenceError(db, id)
+	for _, op := range db.CertificateDeletionOps {
+		if op.OperationID == allowedOperationID {
+			continue
+		}
+		if op.CertificateID == id && op.State == "deleting" {
+			return model.Certificate{}, fail("CERTIFICATE_DELETE_OPERATION_PENDING", "certificate deletion operation is pending")
+		}
+	}
+	if err := certificateReferenceError(db, id); err != nil {
+		return model.Certificate{}, err
+	}
+	return *certificate, nil
 }
 
 func (h *Host) reconcileTrustOperations() error {
@@ -498,6 +530,12 @@ func (h *Host) reconcileTrustOperations() error {
 			case model.CertificateTrustError:
 				if verified {
 					certificate.Trusted = true
+					if certificate.TrustOperationID != "" {
+						certificate.TrustState = model.CertificateTrustTrusted
+						certificate.InstalledByScopeNest = certificate.InstalledByScopeNest || !certificate.TrustOperationWasTrusted
+						certificate.ManualTrustAcknowledgment = nil
+						clearTrustOperation(certificate)
+					}
 				} else {
 					certificate.Trusted = false
 					if certificate.TrustOperationID != "" {
@@ -511,6 +549,139 @@ func (h *Host) reconcileTrustOperations() error {
 		}
 		return nil
 	})
+}
+
+func (h *Host) reconcileCertificateDeletions() error {
+	db, err := h.store.Load()
+	if err != nil {
+		return err
+	}
+	for _, op := range db.CertificateDeletionOps {
+		if op.State != "deleting" {
+			continue
+		}
+		if err := h.reconcileCertificateDeletion(op); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Host) reconcileCertificateDeletion(op model.CertificateDeletionOperation) error {
+	certRoot := filepath.Join(h.store.Root(), "resources", "certificates")
+	source, err := security.ResolveWithin(certRoot, op.SourceDirectory)
+	if err != nil {
+		return h.markCertificateDeletionError(op.OperationID, "source directory is outside certificate root")
+	}
+	staged, err := security.ResolveWithin(certRoot, op.StagedDirectory)
+	if err != nil {
+		return h.markCertificateDeletionError(op.OperationID, "staged directory is outside certificate root")
+	}
+	db, err := h.store.Load()
+	if err != nil {
+		return err
+	}
+	var certificate *model.Certificate
+	for i := range db.Certificates {
+		if db.Certificates[i].ID == op.CertificateID {
+			certificate = &db.Certificates[i]
+			break
+		}
+	}
+	sourceExists := directoryExists(source)
+	stagedExists := directoryExists(staged)
+	switch {
+	case certificate != nil && stagedExists && !sourceExists:
+		if err := os.Rename(staged, source); err != nil {
+			return h.markCertificateDeletionError(op.OperationID, err.Error())
+		}
+		_ = syncParentBestEffort(source)
+		return h.removeCertificateDeletionOp(op.OperationID)
+	case certificate == nil && stagedExists:
+		if err := os.RemoveAll(staged); err != nil {
+			return h.markCertificateDeletionError(op.OperationID, err.Error())
+		}
+		_ = syncParentBestEffort(staged)
+		return h.removeCertificateDeletionOp(op.OperationID)
+	case certificate != nil && sourceExists && !stagedExists:
+		return h.removeCertificateDeletionOp(op.OperationID)
+	case certificate != nil && sourceExists && stagedExists:
+		sourceMatches := certificateDirectoryFingerprintMatches(source, certificate.SHA256Fingerprint)
+		stagedMatches := certificateDirectoryFingerprintMatches(staged, certificate.SHA256Fingerprint)
+		switch {
+		case sourceMatches:
+			if err := os.RemoveAll(staged); err != nil {
+				return h.markCertificateDeletionError(op.OperationID, err.Error())
+			}
+			_ = syncParentBestEffort(staged)
+			return h.removeCertificateDeletionOp(op.OperationID)
+		case stagedMatches:
+			if err := os.RemoveAll(source); err != nil {
+				return h.markCertificateDeletionError(op.OperationID, err.Error())
+			}
+			if err := os.Rename(staged, source); err != nil {
+				return h.markCertificateDeletionError(op.OperationID, err.Error())
+			}
+			_ = syncParentBestEffort(source)
+			return h.removeCertificateDeletionOp(op.OperationID)
+		default:
+			return h.markCertificateDeletionError(op.OperationID, "neither deletion directory matches certificate fingerprint")
+		}
+	case certificate == nil && !stagedExists && !sourceExists:
+		return h.markCertificateDeletionError(op.OperationID, "certificate metadata and deletion directories are missing")
+	default:
+		return h.markCertificateDeletionError(op.OperationID, "certificate deletion tombstone could not be reconciled")
+	}
+}
+
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func certificateDirectoryFingerprintMatches(dir, fingerprint string) bool {
+	der, err := os.ReadFile(filepath.Join(dir, "certificate.der"))
+	if err != nil {
+		return false
+	}
+	actual, err := certstore.FingerprintDER(der)
+	return err == nil && actual == fingerprint
+}
+
+func (h *Host) markCertificateDeletionError(operationID, message string) error {
+	return h.store.Update(func(db *model.Database) error {
+		for i := range db.CertificateDeletionOps {
+			if db.CertificateDeletionOps[i].OperationID == operationID {
+				db.CertificateDeletionOps[i].State = "deletion_error"
+				db.CertificateDeletionOps[i].Error = message
+				db.CertificateDeletionOps[i].UpdatedAt = h.now()
+				return nil
+			}
+		}
+		return nil
+	})
+}
+
+func (h *Host) removeCertificateDeletionOp(operationID string) error {
+	return h.store.Update(func(db *model.Database) error {
+		for i := range db.CertificateDeletionOps {
+			if db.CertificateDeletionOps[i].OperationID == operationID {
+				db.CertificateDeletionOps = append(db.CertificateDeletionOps[:i], db.CertificateDeletionOps[i+1:]...)
+				return nil
+			}
+		}
+		return nil
+	})
+}
+
+func syncParentBestEffort(path string) error {
+	dir := filepath.Dir(path)
+	handle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+	return handle.Sync()
 }
 
 func clearTrustOperation(certificate *model.Certificate) {

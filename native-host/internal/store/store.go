@@ -68,7 +68,7 @@ func (s *Store) Load() (model.Database, error) {
 }
 
 func (s *Store) loadUnlocked() (model.Database, error) {
-	db := model.Database{Version: CurrentVersion, Containers: []model.Container{}, ProxyProfiles: []model.ProxyProfile{}, Certificates: []model.Certificate{}, EnvironmentTemplates: []model.EnvironmentTemplate{}}
+	db := model.Database{Version: CurrentVersion, Containers: []model.Container{}, ProxyProfiles: []model.ProxyProfile{}, Certificates: []model.Certificate{}, CertificateDeletionOps: []model.CertificateDeletionOperation{}, EnvironmentTemplates: []model.EnvironmentTemplate{}}
 	data, err := os.ReadFile(s.metaPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return db, nil
@@ -101,6 +101,9 @@ func (s *Store) loadUnlocked() (model.Database, error) {
 	}
 	if db.Certificates == nil {
 		db.Certificates = []model.Certificate{}
+	}
+	if db.CertificateDeletionOps == nil {
+		db.CertificateDeletionOps = []model.CertificateDeletionOperation{}
 	}
 	if db.EnvironmentTemplates == nil {
 		db.EnvironmentTemplates = []model.EnvironmentTemplate{}

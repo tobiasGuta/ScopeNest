@@ -68,12 +68,12 @@ ScopeNest never uses broad process-name killing or heuristic descendant discover
 
 ## Proxy and certificate protections
 
-- Proxy profiles are validated by the native host for protocol, loopback host, port, bypass-list length, duplicate bypass rules, duplicate certificate IDs, null/control characters, and argument-injection patterns.
+- Proxy profiles are validated by the native host for protocol, strict local host (`127.0.0.0/8`, `::1`, or `localhost` normalized to a loopback literal), port, bypass-list length, duplicate bypass rules, duplicate certificate IDs, null/control characters, and argument-injection patterns.
 - A disabled proxy profile returns `PROXY_PROFILE_DISABLED`. Health-check-disabled profiles still launch with the proxy; they only skip listener reachability checks and unavailable-listener behavior.
 - Required template and proxy certificates are merged without duplicates. The native host verifies required managed DER files and trust state before launch; the extension is never trusted as the source of certificate readiness.
 - Windows trust operations are scoped to `CurrentUser\Root`, persist `installing`/`removing`/`trust_error` operation state, verify exact fingerprint and encoded DER after native trust-store changes, and reconcile incomplete operations at startup.
 - Linux manual trust acknowledgment is never represented as verified trust. It is unverified, fingerprint-bound metadata only.
-- Certificate deletion is refused while trust is installed, ScopeNest ownership is recorded, a trust operation is pending, or a proxy/template still references the certificate. Users must remove trust before deleting the library entry.
+- Certificate deletion is refused while ScopeNest ownership is recorded, a trust operation is pending, or a proxy/template still references the certificate. Pre-existing trusted certificates can be removed from the ScopeNest library without changing Windows trust. Deletion uses a persisted tombstone so startup can restore or finish interrupted filesystem cleanup.
 - ScopeNest does not download remote certificates, handle private keys, launch proxy tools, install browser extensions automatically, or create a remote listener.
 
 ## Extension permissions

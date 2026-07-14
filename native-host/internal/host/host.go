@@ -118,6 +118,9 @@ func New(st *store.Store, launcher browser.Launcher, certManager *certstore.Mana
 	h.startupCleanup = func() error {
 		if h.certManager != nil {
 			h.certManager.CleanupStaging()
+			if err := h.reconcileCertificateDeletions(); err != nil {
+				return err
+			}
 			if err := h.reconcileTrustOperations(); err != nil {
 				return err
 			}

@@ -59,7 +59,7 @@ func TestArgumentsWithProxyOptions(t *testing.T) {
 	foundServer := false
 	foundQuic := false
 	for _, arg := range args {
-		if arg == "--proxy-server=http=127.0.0.1:8080;https=127.0.0.1:8080" {
+		if arg == "--proxy-server=http=http://127.0.0.1:8080;https=http://127.0.0.1:8080" {
 			foundServer = true
 		}
 		if arg == "--disable-quic" {
@@ -110,9 +110,10 @@ func TestArgumentsUseJoinHostPortForIPv6ProxyHosts(t *testing.T) {
 		options  ProxyOptions
 		expected string
 	}{
-		{"http-ipv4", ProxyOptions{Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080}, "--proxy-server=http=127.0.0.1:8080;https=127.0.0.1:8080"},
-		{"http-localhost", ProxyOptions{Enabled: true, Protocol: "http", Host: "localhost", Port: 8080}, "--proxy-server=http=localhost:8080;https=localhost:8080"},
-		{"http-ipv6", ProxyOptions{Enabled: true, Protocol: "http", Host: "::1", Port: 8080}, "--proxy-server=http=[::1]:8080;https=[::1]:8080"},
+		{"http-ipv4", ProxyOptions{Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080}, "--proxy-server=http=http://127.0.0.1:8080;https=http://127.0.0.1:8080"},
+		{"http-localhost", ProxyOptions{Enabled: true, Protocol: "http", Host: "localhost", Port: 8080}, "--proxy-server=http=http://localhost:8080;https=http://localhost:8080"},
+		{"http-ipv6", ProxyOptions{Enabled: true, Protocol: "http", Host: "::1", Port: 8080}, "--proxy-server=http=http://[::1]:8080;https=http://[::1]:8080"},
+		{"https-ipv4", ProxyOptions{Enabled: true, Protocol: "https", Host: "127.0.0.1", Port: 8443}, "--proxy-server=http=https://127.0.0.1:8443;https=https://127.0.0.1:8443"},
 		{"socks5-ipv6", ProxyOptions{Enabled: true, Protocol: "socks5", Host: "::1", Port: 1080}, "--proxy-server=socks5://[::1]:1080"},
 	}
 	for _, tc := range cases {

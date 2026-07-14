@@ -3,6 +3,36 @@ import { button, toggleMenu, confirmDelete, bindDialogControls } from "./common.
 
 const $ = (selector) => document.querySelector(selector);
 
+export const DEFAULT_PROXY_VALUES = Object.freeze({
+  enabled: true,
+  protocol: "http",
+  host: "127.0.0.1",
+  port: 8080,
+  bypassRules: [],
+  certificateIds: [],
+  healthCheck: { enabled: true, timeoutMs: 1500 },
+  unavailableBehavior: "warn",
+});
+
+export function buildProxyProfilePayload(values = {}) {
+  return {
+    name: typeof values.name === "string" ? values.name : "",
+    enabled: values.enabled ?? DEFAULT_PROXY_VALUES.enabled,
+    protocol: values.protocol || DEFAULT_PROXY_VALUES.protocol,
+    host: values.host || DEFAULT_PROXY_VALUES.host,
+    port: Number.parseInt(values.port ?? DEFAULT_PROXY_VALUES.port, 10),
+    bypassRules: Array.isArray(values.bypassRules)
+      ? values.bypassRules.map((rule) => String(rule).trim()).filter(Boolean)
+      : String(values.bypassRules || "").split("\n").map((rule) => rule.trim()).filter(Boolean),
+    certificateIds: Array.isArray(values.certificateIds) ? [...values.certificateIds] : [],
+    healthCheck: {
+      enabled: values.healthCheck?.enabled ?? DEFAULT_PROXY_VALUES.healthCheck.enabled,
+      timeoutMs: Number.parseInt(values.healthCheck?.timeoutMs ?? DEFAULT_PROXY_VALUES.healthCheck.timeoutMs, 10),
+    },
+    unavailableBehavior: values.unavailableBehavior || DEFAULT_PROXY_VALUES.unavailableBehavior,
+  };
+}
+
 export function initProxies(state, refreshApp) {
   function renderCard(proxy) {
     const card = document.createElement("article");
@@ -94,7 +124,7 @@ export function initProxies(state, refreshApp) {
     event.preventDefault();
     const submitter = event.submitter; if (submitter?.value === "cancel") { $("#proxy-dialog").close(); return; }
     
-    const input = {
+    const input = buildProxyProfilePayload({
       name: $("#proxy-name").value,
       enabled: $("#proxy-enabled").checked,
       protocol: $("#proxy-protocol").value,
@@ -107,7 +137,7 @@ export function initProxies(state, refreshApp) {
         timeoutMs: parseInt($("#proxy-timeout").value, 10),
       },
       unavailableBehavior: $("#proxy-unavailable").value,
-    };
+    });
     
     const id = $("#proxy-id").value;
     try {

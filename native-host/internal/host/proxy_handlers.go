@@ -44,17 +44,11 @@ func validateProxyInput(p *model.ProxyProfile) error {
 	if p.Host == "" || hasControl(p.Host) || strings.Contains(p.Host, "--") || strings.ContainsAny(p.Host, " \t\r\n/\\\"'`") {
 		return fmt.Errorf("invalid host format")
 	}
-
-	// Enforce loopback
-	ips, err := net.LookupIP(p.Host)
+	host, err := normalizeLocalProxyHost(p.Host)
 	if err != nil {
-		return fmt.Errorf("host cannot be resolved")
+		return err
 	}
-	for _, ip := range ips {
-		if !ip.IsLoopback() {
-			return fmt.Errorf("host must resolve to a loopback address")
-		}
-	}
+	p.Host = host
 	if p.UnavailableBehavior != "warn" && p.UnavailableBehavior != "block" && p.UnavailableBehavior != "direct" {
 		return fmt.Errorf("invalid unavailable behavior")
 	}
@@ -107,6 +101,26 @@ func validateProxyInput(p *model.ProxyProfile) error {
 	}
 	p.CertificateIDs = certificateIDs
 	return nil
+}
+
+func normalizeLocalProxyHost(host string) (string, error) {
+	value := strings.TrimSpace(strings.ToLower(host))
+	if value == "localhost" {
+		return "127.0.0.1", nil
+	}
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return "", fmt.Errorf("host must be 127.0.0.0/8, ::1, or localhost")
+	}
+	if ip.IsLoopback() {
+		if ip4 := ip.To4(); ip4 != nil && ip4[0] == 127 {
+			return ip4.String(), nil
+		}
+		if ip.Equal(net.IPv6loopback) {
+			return "::1", nil
+		}
+	}
+	return "", fmt.Errorf("host must be 127.0.0.0/8, ::1, or localhost")
 }
 
 func hasControl(value string) bool {
@@ -252,14 +266,9 @@ type proxyListenerResult struct {
 }
 
 func (h *Host) checkProxyListener(host string, port int, timeout time.Duration) proxyListenerResult {
-	ips, err := net.LookupIP(host)
+	host, err := normalizeLocalProxyHost(host)
 	if err != nil {
-		return proxyListenerResult{ErrorCode: "DNS_FAILED"}
-	}
-	for _, ip := range ips {
-		if !ip.IsLoopback() {
-			return proxyListenerResult{ErrorCode: "NON_LOOPBACK_REJECTED"}
-		}
+		return proxyListenerResult{ErrorCode: "NON_LOOPBACK_REJECTED"}
 	}
 	if timeout <= 0 {
 		timeout = 1500 * time.Millisecond

@@ -1,6 +1,6 @@
 import { request, toast } from "./api.js";
 import { button, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
-import { certificateTrustView } from "./state.js";
+import { certificateActionView, certificateTrustView } from "./state.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -31,13 +31,16 @@ export function initCertificates(state, refreshApp) {
     menuButton.setAttribute("aria-expanded", "false"); head.append(menuButton); main.append(head); card.append(main);
 
     const actions = document.createElement("div"); actions.className = "card-actions";
-    if (state.host?.capabilities?.trustInstallation === false) {
+    const actionView = certificateActionView(cert, state.host);
+    if (actionView.kind === "status") {
       const message = document.createElement("p"); message.className = "meta";
-      message.textContent = cert.trustState === "manual_trust_acknowledged_unverified"
-        ? "Manual trust acknowledged for this exact fingerprint. ScopeNest has not verified browser or operating-system trust."
-        : "Manually trust this exact certificate, then acknowledge its fingerprint.";
+      message.textContent = actionView.label;
       actions.append(message);
-      if (state.host?.capabilities?.manualTrustAcknowledgment === true && cert.trustState !== "manual_trust_acknowledged_unverified") {
+    } else if (actionView.kind === "manual" || actionView.kind === "acknowledge") {
+      const message = document.createElement("p"); message.className = "meta";
+      message.textContent = actionView.label;
+      actions.append(message);
+      if (actionView.kind === "acknowledge") {
         actions.append(button("Acknowledge exact fingerprint", "button secondary", async () => {
           if (!window.confirm(`Acknowledge manual Linux trust for ${cert.sha256Fingerprint}? ScopeNest cannot verify it.`)) return;
           try {
@@ -46,12 +49,12 @@ export function initCertificates(state, refreshApp) {
           } catch (error) { toast(error.message, true); }
         }));
       }
-    } else if (cert.trustState === "trusted") {
+    } else if (actionView.kind === "remove") {
       actions.append(button("Remove Trust", "button ghost", async () => {
         try { await request("remove_certificate_trust", { id: cert.id }); toast("Trust removed."); await refreshApp(); }
         catch (error) { toast(error.message, true); }
       }));
-    } else {
+    } else if (actionView.kind === "install") {
       actions.append(button("Install Trust", "button primary", async () => {
         try { await request("install_certificate_trust", { id: cert.id }); toast("Certificate installed."); await refreshApp(); }
         catch (error) { toast(error.message, true); }

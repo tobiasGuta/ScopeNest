@@ -178,7 +178,7 @@ Choose **Custom executable…** to enter another Chromium-based browser. The nat
 
 ## Proxy profiles, templates, and certificates
 
-Proxy profiles are local loopback listener definitions. A new proxy defaults to enabled HTTP on `127.0.0.1:8080`, no bypass rules, no associated certificates, listener health checks enabled with a 1500 ms timeout, and `warn` behavior when the listener is unavailable. Supported unavailable-listener behaviors are:
+Proxy profiles are local loopback listener definitions. A new proxy defaults to enabled HTTP-proxy transport on `127.0.0.1:8080`, no bypass rules, no associated certificates, listener health checks enabled with a 1500 ms timeout, and `warn` behavior when the listener is unavailable. Proxy hosts are limited to `127.0.0.0/8`, `::1`, or `localhost`; `localhost` is stored as a literal loopback address so later DNS changes cannot redirect browser traffic.
 
 - `warn`: launch with the configured proxy, disable QUIC, and return a warning.
 - `block`: reject launch with `PROXY_LISTENER_UNAVAILABLE`.
@@ -232,14 +232,15 @@ Target - Admin browser
 
 ScopeNest does not launch interception tools, install browser extensions automatically, download remote certificates, accept arbitrary startup commands, accept arbitrary Chromium arguments, or pass `--ignore-certificate-errors`.
 
-Imported certificates are stored as managed DER bytes and fingerprinted. Windows trust installation targets only `CurrentUser\Root`; repeated installation preserves whether ScopeNest originally installed the certificate. Trust operations are persisted as recoverable states (`installing`, `removing`, or `trust_error`) and reconciled on startup against the managed DER and trust-store entry. A certificate cannot be deleted while it is trusted, owned by ScopeNest in the trust store, referenced by a proxy/template, or involved in a pending trust operation. Remove trust first, then delete the certificate from the library.
+Imported certificates are stored as managed DER bytes and fingerprinted. Windows trust installation targets only `CurrentUser\Root`; repeated installation preserves whether ScopeNest originally installed the certificate. Trust operations are persisted as recoverable states (`installing`, `removing`, or `trust_error`) and reconciled on startup against the managed DER and trust-store entry. A certificate cannot be deleted while ScopeNest owns its trust-store entry, a proxy/template references it, or a trust operation is pending. If Windows already trusted the certificate before ScopeNest imported it, ScopeNest can remove only the library entry and managed DER while leaving Windows trust unchanged. Certificate deletion uses a persisted tombstone so startup can restore an interrupted staged delete or finish cleanup after metadata removal.
 
 Linux manual trust acknowledgment is unverified metadata bound to the exact certificate fingerprint. It means the user acknowledged manual trust for that fingerprint; ScopeNest has not verified browser or operating-system trust.
 
 IPv6 loopback listeners are supported. Chromium proxy arguments use bracketed host-port formatting, for example:
 
 ```text
---proxy-server=http=[::1]:8080;https=[::1]:8080
+--proxy-server=http=http://[::1]:8080;https=http://[::1]:8080
+--proxy-server=http=https://127.0.0.1:8443;https=https://127.0.0.1:8443
 --proxy-server=socks5://[::1]:1080
 ```
 

@@ -67,6 +67,17 @@ type Certificate struct {
 	UpdatedAt                 time.Time                  `json:"updatedAt"`
 }
 
+type CertificateDeletionOperation struct {
+	CertificateID   string    `json:"certificateId"`
+	OperationID     string    `json:"operationId"`
+	SourceDirectory string    `json:"sourceDirectory"`
+	StagedDirectory string    `json:"stagedDirectory"`
+	State           string    `json:"state"`
+	Error           string    `json:"error,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
 type ManualTrustAcknowledgment struct {
 	CertificateID     string    `json:"certificateId"`
 	SHA256Fingerprint string    `json:"sha256Fingerprint"`
@@ -110,9 +121,10 @@ type Container struct {
 }
 
 type Database struct {
-	Version              int                   `json:"version"`
-	Containers           []Container           `json:"containers"`
-	ProxyProfiles        []ProxyProfile        `json:"proxyProfiles"`
-	Certificates         []Certificate         `json:"certificates"`
-	EnvironmentTemplates []EnvironmentTemplate `json:"environmentTemplates"`
+	Version                int                            `json:"version"`
+	Containers             []Container                    `json:"containers"`
+	ProxyProfiles          []ProxyProfile                 `json:"proxyProfiles"`
+	Certificates           []Certificate                  `json:"certificates"`
+	CertificateDeletionOps []CertificateDeletionOperation `json:"certificateDeletionOps,omitempty"`
+	EnvironmentTemplates   []EnvironmentTemplate          `json:"environmentTemplates"`
 }
