@@ -103,6 +103,40 @@ func TestArgumentsWithProxyOptions(t *testing.T) {
 	}
 }
 
+func TestArgumentsUseJoinHostPortForIPv6ProxyHosts(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "proxy_profile")
+	cases := []struct {
+		name     string
+		options  ProxyOptions
+		expected string
+	}{
+		{"http-ipv4", ProxyOptions{Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080}, "--proxy-server=http=127.0.0.1:8080;https=127.0.0.1:8080"},
+		{"http-localhost", ProxyOptions{Enabled: true, Protocol: "http", Host: "localhost", Port: 8080}, "--proxy-server=http=localhost:8080;https=localhost:8080"},
+		{"http-ipv6", ProxyOptions{Enabled: true, Protocol: "http", Host: "::1", Port: 8080}, "--proxy-server=http=[::1]:8080;https=[::1]:8080"},
+		{"socks5-ipv6", ProxyOptions{Enabled: true, Protocol: "socks5", Host: "::1", Port: 1080}, "--proxy-server=socks5://[::1]:1080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := Arguments(profile, "", tc.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsArg(args, tc.expected) {
+				t.Fatalf("missing %q in %#v", tc.expected, args)
+			}
+		})
+	}
+}
+
+func containsArg(args []string, expected string) bool {
+	for _, arg := range args {
+		if arg == expected {
+			return true
+		}
+	}
+	return false
+}
+
 func TestManagedProcessTreeHelper(t *testing.T) {
 	if len(os.Args) < 3 {
 		return

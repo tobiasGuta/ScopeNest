@@ -19,6 +19,10 @@ func (s UnixTrustStore) Supported() bool {
 	return false
 }
 
+func (s UnixTrustStore) Verify(der []byte, fingerprint string) (bool, error) {
+	return false, errors.New("certificate trust verification is not supported on this platform")
+}
+
 func (s UnixTrustStore) Install(der []byte, fingerprint string) (bool, error) {
 	return false, errors.New("certificate trust installation is not supported on this platform")
 }

@@ -8,7 +8,10 @@ const (
 	StateRunning   = "running"
 
 	CertificateTrustUntrusted                    = "untrusted"
+	CertificateTrustInstalling                   = "installing"
 	CertificateTrustTrusted                      = "trusted"
+	CertificateTrustRemoving                     = "removing"
+	CertificateTrustError                        = "trust_error"
 	CertificateTrustManualAcknowledgedUnverified = "manual_trust_acknowledged_unverified"
 )
 
@@ -55,6 +58,10 @@ type Certificate struct {
 	TrustScope                string                     `json:"trustScope"`
 	InstalledByScopeNest      bool                       `json:"installedByScopeNest"`
 	TrustState                string                     `json:"trustState"`
+	TrustOperationID          string                     `json:"trustOperationId,omitempty"`
+	TrustOperationFingerprint string                     `json:"trustOperationFingerprint,omitempty"`
+	TrustOperationWasTrusted  bool                       `json:"trustOperationWasTrusted,omitempty"`
+	TrustError                string                     `json:"trustError,omitempty"`
 	ManualTrustAcknowledgment *ManualTrustAcknowledgment `json:"manualTrustAcknowledgment,omitempty"`
 	CreatedAt                 time.Time                  `json:"createdAt"`
 	UpdatedAt                 time.Time                  `json:"updatedAt"`

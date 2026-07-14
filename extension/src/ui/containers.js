@@ -1,5 +1,5 @@
 import { request, toast } from "./api.js";
-import { button, formatDate, toggleMenu, confirmDelete } from "./common.js";
+import { button, formatDate, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
 import { validateContainer, validateWebURL } from "../shared/validation.js";
 import { connectionView, visibleContainers } from "./state.js";
 import { savePreferences } from "../shared/storage.js";
@@ -104,7 +104,8 @@ export function initContainers(state, refreshApp) {
 
   function openDialog(container = null, temporary = false) {
     const isTemp = temporary || container?.temporary;
-    $("#container-form").reset(); $("#container-id").value = container?.id || ""; $("#temporary").value = String(isTemp);
+    containerDialog.open();
+    $("#container-id").value = container?.id || ""; $("#temporary").value = String(isTemp);
     $("#dialog-kind").textContent = isTemp ? "TEMPORARY CONTEXT" : "CONTAINER";
     $("#dialog-title").textContent = container ? "Edit container" : isTemp ? "Create temporary container" : "Create container";
     $("#save").textContent = container ? "Save changes" : isTemp ? "Create & launch" : "Create container";
@@ -114,16 +115,19 @@ export function initContainers(state, refreshApp) {
     
     // Fill network mode
     $("#network-mode").value = container?.networkMode || "direct";
-    syncNetworkMode();
     fillProxies(container?.proxyProfileId);
     fillTemplates(container?.environmentTemplateId);
+    syncNetworkMode();
 
-    $("#form-error").hidden = true; fillBrowsers(container); $("#container-dialog").showModal(); $("#name").focus();
+    $("#form-error").hidden = true; fillBrowsers(container); $("#name").focus();
   }
 
   function syncNetworkMode() {
     const mode = $("#network-mode").value;
     $("#proxy-profile-wrap").hidden = mode !== "proxy";
+    $("#environment-template-wrap").hidden = mode === "direct";
+    if (mode !== "proxy") $("#proxy-profile").value = "";
+    if (mode === "direct") $("#environment-template").value = "";
   }
 
   function fillProxies(selectedId) {
@@ -162,7 +166,7 @@ export function initContainers(state, refreshApp) {
       $("#save").disabled = true;
       const saved = id ? await request("update_container", { id, ...input }) : await request(temporary ? "create_temporary_container" : "create_container", input);
       state.preferences = await savePreferences(chrome.storage.local, { lastBrowser: { type: input.browserType, path: input.browserExecutable } });
-      $("#container-dialog").close(); toast(id ? "Container updated." : "Container created.");
+      containerDialog.close(); toast(id ? "Container updated." : "Container created.");
       if (temporary || $("#launch-after").checked) await launch(saved.id, ""); else await refreshApp();
     } catch (error) { $("#form-error").textContent = error.message; $("#form-error").hidden = false; }
     finally { $("#save").disabled = false; }
@@ -196,6 +200,13 @@ export function initContainers(state, refreshApp) {
   }
 
   // Bind events
+  const containerDialog = bindDialogControls($("#container-dialog"), {
+    form: $("#container-form"),
+    error: $("#form-error"),
+    opener: () => document.activeElement,
+    initialFocus: () => $("#name"),
+  });
+
   $("#new-container").addEventListener("click", () => openDialog()); $("#new-temporary").addEventListener("click", () => openDialog(null, true)); $("#empty-create").addEventListener("click", () => openDialog());
   $("#container-form").addEventListener("submit", saveForm); $("#browser").addEventListener("change", syncBrowserPath); $("#retry").addEventListener("click", refreshApp);
   $("#search").addEventListener("input", renderContainers);

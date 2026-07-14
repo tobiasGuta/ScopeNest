@@ -349,6 +349,27 @@ func TestCreateContainerAndPersistMetadata(t *testing.T) {
 	}
 }
 
+func TestCreateContainerRejectsMissingNetworkReferences(t *testing.T) {
+	h, _, executable := testHost(t)
+	missingID := "11111111111111111111111111111111"
+	for _, tc := range []struct {
+		name      string
+		input     containerInput
+		errorCode string
+	}{
+		{"missing proxy", containerInput{Name: "Missing proxy", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "proxy", ProxyProfileID: missingID}, "PROXY_PROFILE_NOT_FOUND"},
+		{"missing template", containerInput{Name: "Missing template", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "template", EnvironmentTemplateID: missingID}, "ENVIRONMENT_TEMPLATE_NOT_FOUND"},
+		{"ambiguous direct", containerInput{Name: "Ambiguous", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "direct", ProxyProfileID: missingID}, "INVALID_NETWORK_CONFIGURATION"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := h.Handle(request(t, "create_container", tc.input))
+			if response.Success || response.ErrorCode != tc.errorCode {
+				t.Fatalf("unexpected response: %#v", response)
+			}
+		})
+	}
+}
+
 func TestStrictCommandDataTypes(t *testing.T) {
 	h, _, executable := testHost(t)
 	response := h.Handle(request(t, "create_container", map[string]any{"name": "Admin", "color": "#725cff", "icon": "", "browserType": "custom", "browserExecutable": executable, "unexpected": true}))
@@ -1147,7 +1168,7 @@ func proxyLaunchHost(t *testing.T, behavior string) (*Host, *store.Store, *recor
 	profile, _ := st.EnsureProfile(containerID)
 	now := time.Now().UTC()
 	err = st.Update(func(db *model.Database) error {
-		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: proxyID, Name: "Proxy", Protocol: "http", Host: "127.0.0.1", Port: 65530, UnavailableBehavior: behavior, HealthCheck: model.ProxyHealthCheck{Enabled: true, TimeoutMs: 100}})
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: proxyID, Name: "Proxy", Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 65530, UnavailableBehavior: behavior, HealthCheck: model.ProxyHealthCheck{Enabled: true, TimeoutMs: 100}})
 		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Proxy launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "proxy", ProxyProfileID: proxyID})
 		return nil
 	})
@@ -1226,6 +1247,124 @@ func TestProxyUnavailableDirectChecksListenerLaunchesWithoutProxyOrQUICAndReport
 	}
 }
 
+func TestProxyHealthCheckDisabledLaunchesWithProxyWithoutListenerCheck(t *testing.T) {
+	h, _, launcher, id, checks := proxyLaunchHost(t, "block")
+	if err := h.store.Update(func(db *model.Database) error {
+		db.ProxyProfiles[0].HealthCheck.Enabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launched, err := h.launch(launchInput{ID: id, URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if *checks != 0 || calls != 1 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	if launched.DirectFallbackUsed || launched.ProxyWarning != nil || !containsArgument(args, "--proxy-server=") {
+		t.Fatalf("unexpected launch metadata or args: %#v %v", launched, args)
+	}
+}
+
+func TestDisabledProxyProfileBlocksLaunchWithoutDirectFallback(t *testing.T) {
+	h, _, launcher, id, _ := proxyLaunchHost(t, "warn")
+	if err := h.store.Update(func(db *model.Database) error {
+		db.ProxyProfiles[0].Enabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := h.Handle(request(t, "launch_container", launchInput{ID: id}))
+	if response.Success || response.ErrorCode != "PROXY_PROFILE_DISABLED" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	calls, _ := launcher.snapshot()
+	if calls != 0 {
+		t.Fatalf("disabled proxy launched browser: %d", calls)
+	}
+}
+
+func TestTemplateInheritanceLaunchUsesTemplateProxyAndCertificates(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.installCertificateTrust(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "chrome")
+	if os.PathSeparator == '\\' {
+		executable += ".exe"
+	}
+	if err := os.WriteFile(executable, []byte("test browser placeholder"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	containerID, _ := security.NewID()
+	proxyID, _ := security.NewID()
+	templateID, _ := security.NewID()
+	profile, _ := st.EnsureProfile(containerID)
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: proxyID, Name: "Template proxy", Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080, CertificateIDs: []string{certificate.ID}, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: false, TimeoutMs: 1500}})
+		db.EnvironmentTemplates = append(db.EnvironmentTemplates, model.EnvironmentTemplate{ID: templateID, Name: "Web Pentest", ProxyProfileID: proxyID, CertificateIDs: []string{certificate.ID}, CreatedAt: now, UpdatedAt: now})
+		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Template launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "template", EnvironmentTemplateID: templateID})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &recordingLauncher{process: newControlledProcess(9100, true)}
+	h.launcher = launcher
+	h.watcher = func(string, browser.Process) {}
+	launched, err := h.launch(launchInput{ID: containerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if calls != 1 || launched.DirectFallbackUsed || !containsExactArgument(args, "--proxy-server=http=127.0.0.1:8080;https=127.0.0.1:8080") {
+		t.Fatalf("template proxy was not used: calls=%d launched=%#v args=%v", calls, launched, args)
+	}
+}
+
+func TestContainerProxyOverrideUsesProxyInsteadOfTemplateProxy(t *testing.T) {
+	h, st, executable := testHost(t)
+	h.launcher = &recordingLauncher{process: newControlledProcess(9200, true)}
+	h.watcher = func(string, browser.Process) {}
+	containerID, _ := security.NewID()
+	proxyA, _ := security.NewID()
+	proxyB, _ := security.NewID()
+	templateID, _ := security.NewID()
+	profile, _ := st.EnsureProfile(containerID)
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.ProxyProfiles = append(db.ProxyProfiles,
+			model.ProxyProfile{ID: proxyA, Name: "Proxy A", Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: false, TimeoutMs: 1500}},
+			model.ProxyProfile{ID: proxyB, Name: "Proxy B", Enabled: true, Protocol: "socks5", Host: "::1", Port: 1080, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: false, TimeoutMs: 1500}},
+		)
+		db.EnvironmentTemplates = append(db.EnvironmentTemplates, model.EnvironmentTemplate{ID: templateID, Name: "Template", ProxyProfileID: proxyA, CreatedAt: now, UpdatedAt: now})
+		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Override launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "proxy", ProxyProfileID: proxyB, EnvironmentTemplateID: templateID})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.launch(launchInput{ID: containerID}); err != nil {
+		t.Fatal(err)
+	}
+	_, args := h.launcher.(*recordingLauncher).snapshot()
+	if !containsExactArgument(args, "--proxy-server=socks5://[::1]:1080") {
+		t.Fatalf("override proxy was not used: %v", args)
+	}
+}
+
+func containsExactArgument(args []string, expected string) bool {
+	for _, arg := range args {
+		if arg == expected {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLinuxManualTrustAcknowledgmentBindsCertificateFingerprintPlatformAndTimestamp(t *testing.T) {
 	st, _ := store.New(t.TempDir())
 	id, _ := security.NewID()
@@ -1282,6 +1421,9 @@ type ownershipTrustStore struct {
 
 func (*ownershipTrustStore) Scope() string   { return "test" }
 func (*ownershipTrustStore) Supported() bool { return true }
+func (s *ownershipTrustStore) Verify([]byte, string) (bool, error) {
+	return s.already || s.installs > s.removals, nil
+}
 func (s *ownershipTrustStore) Install([]byte, string) (bool, error) {
 	s.installs++
 	return s.already, nil
@@ -1322,6 +1464,45 @@ func TestInstallCertificateTrustNeverClaimsPreexistingCertificate(t *testing.T) 
 	}
 	if !updated.Trusted || updated.InstalledByScopeNest {
 		t.Fatalf("pre-existing certificate ownership was claimed: %#v", updated)
+	}
+}
+
+func TestRepeatedCertificateTrustInstallPreservesScopeNestOwnership(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	first, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.InstalledByScopeNest {
+		t.Fatalf("new installation did not record ownership: %#v", first)
+	}
+	trust.already = true
+	second, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.InstalledByScopeNest {
+		t.Fatalf("repeated installation downgraded ownership: %#v", second)
+	}
+}
+
+func TestTrustedCertificateDeletionIsRejectedUntilTrustRemoved(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.installCertificateTrust(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deleteCertificate(certificate.ID); ErrorCode(err) != "CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST" {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+	if _, err := h.removeCertificateTrust(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deleteCertificate(certificate.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 

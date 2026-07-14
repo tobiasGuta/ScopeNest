@@ -1,5 +1,5 @@
 import { request, toast } from "./api.js";
-import { button, formatDate, toggleMenu, confirmDelete } from "./common.js";
+import { button, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -57,20 +57,37 @@ export function initProxies(state, refreshApp) {
   }
 
   function openDialog(proxy = null) {
-    $("#proxy-form").reset();
+    proxyDialog.open();
     $("#proxy-id").value = proxy?.id || "";
     $("#proxy-dialog-title").textContent = proxy ? "Edit proxy profile" : "Create proxy profile";
     $("#proxy-save").textContent = proxy ? "Save changes" : "Create proxy";
     
     $("#proxy-name").value = proxy?.name || "";
+    $("#proxy-enabled").checked = proxy?.enabled ?? true;
     $("#proxy-protocol").value = proxy?.protocol || "http";
     $("#proxy-host").value = proxy?.host || "127.0.0.1";
     $("#proxy-port").value = proxy?.port || 8080;
     $("#proxy-bypass").value = (proxy?.bypassRules || []).join("\n");
+    $("#proxy-health-enabled").checked = proxy?.healthCheck?.enabled ?? true;
+    $("#proxy-timeout").value = proxy?.healthCheck?.timeoutMs || 1500;
+    $("#proxy-unavailable").value = proxy?.unavailableBehavior || "warn";
+    fillCertificates(proxy?.certificateIds || []);
     
     $("#proxy-form-error").hidden = true;
-    $("#proxy-dialog").showModal();
     $("#proxy-name").focus();
+  }
+
+  function fillCertificates(selectedIds) {
+    const select = $("#proxy-certs");
+    select.replaceChildren();
+    const selected = new Set(selectedIds);
+    for (const cert of state.certificates || []) {
+      const option = document.createElement("option");
+      option.value = cert.id;
+      option.textContent = cert.displayName || cert.sha256Fingerprint || cert.id;
+      option.selected = selected.has(cert.id);
+      select.append(option);
+    }
   }
 
   async function saveForm(event) {
@@ -79,10 +96,17 @@ export function initProxies(state, refreshApp) {
     
     const input = {
       name: $("#proxy-name").value,
+      enabled: $("#proxy-enabled").checked,
       protocol: $("#proxy-protocol").value,
       host: $("#proxy-host").value,
       port: parseInt($("#proxy-port").value, 10),
       bypassRules: $("#proxy-bypass").value.split("\n").map(s => s.trim()).filter(Boolean),
+      certificateIds: Array.from($("#proxy-certs").selectedOptions).map((option) => option.value),
+      healthCheck: {
+        enabled: $("#proxy-health-enabled").checked,
+        timeoutMs: parseInt($("#proxy-timeout").value, 10),
+      },
+      unavailableBehavior: $("#proxy-unavailable").value,
     };
     
     const id = $("#proxy-id").value;
@@ -95,7 +119,7 @@ export function initProxies(state, refreshApp) {
         await request("create_proxy_profile", input);
         toast("Proxy profile created.");
       }
-      $("#proxy-dialog").close();
+      proxyDialog.close();
       await refreshApp();
     } catch (error) {
       $("#proxy-form-error").textContent = error.message;
@@ -113,6 +137,14 @@ export function initProxies(state, refreshApp) {
       $("#proxy-list").replaceChildren(...proxies.map(renderCard));
     }
   }
+
+  const proxyDialog = bindDialogControls($("#proxy-dialog"), {
+    form: $("#proxy-form"),
+    error: $("#proxy-form-error"),
+    opener: () => document.activeElement,
+    initialFocus: () => $("#proxy-name"),
+    reset: () => fillCertificates([]),
+  });
 
   $("#new-proxy").addEventListener("click", () => openDialog());
   $("#proxy-form")?.addEventListener("submit", saveForm);

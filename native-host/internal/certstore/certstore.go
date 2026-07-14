@@ -36,6 +36,7 @@ var (
 type TrustStore interface {
 	Scope() string
 	Supported() bool
+	Verify(der []byte, fingerprint string) (bool, error)
 	Install(der []byte, fingerprint string) (alreadyTrusted bool, err error)
 	Remove(der []byte, fingerprint string) error
 }

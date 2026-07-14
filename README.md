@@ -176,6 +176,73 @@ ScopeNest safely detects common locations:
 
 Choose **Custom executable…** to enter another Chromium-based browser. The native host canonicalizes the value, requires an existing regular file, and requires the executable bit on Linux. A configured path is validated again at every launch. Arbitrary arguments are not accepted.
 
+## Proxy profiles, templates, and certificates
+
+Proxy profiles are local loopback listener definitions. A new proxy defaults to enabled HTTP on `127.0.0.1:8080`, no bypass rules, no associated certificates, listener health checks enabled with a 1500 ms timeout, and `warn` behavior when the listener is unavailable. Supported unavailable-listener behaviors are:
+
+- `warn`: launch with the configured proxy, disable QUIC, and return a warning.
+- `block`: reject launch with `PROXY_LISTENER_UNAVAILABLE`.
+- `direct`: explicitly launch without proxy arguments and without `--disable-quic`, reporting `directFallbackUsed`.
+
+Disabling a proxy profile prevents any launch that references it and returns `PROXY_PROFILE_DISABLED`. Disabling the profile's health check does not disable the proxy; it only skips the bounded TCP readiness check and therefore does not apply `warn`, `block`, or `direct`.
+
+Containers use explicit network precedence:
+
+```text
+direct
+  launches direct and cannot carry proxy or template references
+
+proxy
+  uses the selected container proxy profile and may still reference a template for certificate requirements
+
+template
+  inherits the selected environment template's proxy profile and certificate requirements
+```
+
+Broken proxy, template, or certificate references are rejected. ScopeNest never silently falls back to direct networking.
+
+Example:
+
+```text
+Certificate:
+  Local Interception CA
+
+Proxy:
+  Local HTTP Proxy
+  127.0.0.1:8080
+  warn when unavailable
+
+Template:
+  Web Pentest
+  Proxy: Local HTTP Proxy
+  Certificate: Local Interception CA
+
+Container:
+  Target - Admin
+  Network: Inherit Web Pentest template
+```
+
+Expected traffic path:
+
+```text
+Target - Admin browser
+    -> 127.0.0.1:8080
+    -> already-running interception proxy
+```
+
+ScopeNest does not launch interception tools, install browser extensions automatically, download remote certificates, accept arbitrary startup commands, accept arbitrary Chromium arguments, or pass `--ignore-certificate-errors`.
+
+Imported certificates are stored as managed DER bytes and fingerprinted. Windows trust installation targets only `CurrentUser\Root`; repeated installation preserves whether ScopeNest originally installed the certificate. Trust operations are persisted as recoverable states (`installing`, `removing`, or `trust_error`) and reconciled on startup against the managed DER and trust-store entry. A certificate cannot be deleted while it is trusted, owned by ScopeNest in the trust store, referenced by a proxy/template, or involved in a pending trust operation. Remove trust first, then delete the certificate from the library.
+
+Linux manual trust acknowledgment is unverified metadata bound to the exact certificate fingerprint. It means the user acknowledged manual trust for that fingerprint; ScopeNest has not verified browser or operating-system trust.
+
+IPv6 loopback listeners are supported. Chromium proxy arguments use bracketed host-port formatting, for example:
+
+```text
+--proxy-server=http=[::1]:8080;https=[::1]:8080
+--proxy-server=socks5://[::1]:1080
+```
+
 ## Local data and privacy
 
 The native host uses the OS user configuration directory:

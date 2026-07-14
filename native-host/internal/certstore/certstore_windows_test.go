@@ -111,9 +111,20 @@ func (f *fakeWindowsCertAPI) nextCertificate(_ windows.Handle, previous *windows
 	}
 	return &windows.CertContext{}, append([]byte(nil), f.certificates[index]...), nil
 }
-func (f *fakeWindowsCertAPI) freeCertificate(*windows.CertContext)         { f.freed++ }
-func (f *fakeWindowsCertAPI) addNew(windows.Handle, []byte) error          { f.added++; return nil }
-func (f *fakeWindowsCertAPI) deleteCertificate(*windows.CertContext) error { f.deleted++; return nil }
+func (f *fakeWindowsCertAPI) freeCertificate(*windows.CertContext) { f.freed++ }
+func (f *fakeWindowsCertAPI) addNew(_ windows.Handle, der []byte) error {
+	f.added++
+	f.certificates = append(f.certificates, append([]byte(nil), der...))
+	return nil
+}
+func (f *fakeWindowsCertAPI) deleteCertificate(*windows.CertContext) error {
+	f.deleted++
+	if len(f.certificates) > 0 {
+		f.certificates = f.certificates[1:]
+	}
+	f.consumed = 0
+	return nil
+}
 
 func formattedFingerprintForTest(t *testing.T, der []byte) string {
 	t.Helper()
@@ -132,7 +143,7 @@ func TestWindowsTrustStoreOpensOnlyCurrentUserRootAndUsesAddNew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if already || api.opened != 1 || api.closed != 1 || api.added != 1 || CERT_STORE_ADD_NEW != 1 || CERT_SYSTEM_STORE_CURRENT_USER != 1<<16 {
+	if already || api.opened != 2 || api.closed != 2 || api.added != 1 || CERT_STORE_ADD_NEW != 1 || CERT_SYSTEM_STORE_CURRENT_USER != 1<<16 {
 		t.Fatalf("unexpected API use: %#v", api)
 	}
 }
@@ -157,7 +168,7 @@ func TestWindowsTrustStoreRemovalChecksEncodedBytesAndDeleteConsumesContext(t *t
 	if err := trust.Remove(der, formattedFingerprintForTest(t, der)); err != nil {
 		t.Fatal(err)
 	}
-	if api.deleted != 1 || api.freed != 0 || api.closed != 1 {
+	if api.deleted != 1 || api.freed != 0 || api.closed != 2 {
 		t.Fatalf("context ownership incorrect: %#v", api)
 	}
 	if encodedCertificateMatchesManagedDER(append([]byte(nil), der[:len(der)-1]...), der) {

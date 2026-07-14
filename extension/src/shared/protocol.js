@@ -6,7 +6,7 @@ export const COMMANDS = Object.freeze([
   "launch_container", "close_container", "delete_container", "create_temporary_container",
   "cleanup_temporary_containers", "get_running_containers", "validate_browser_path",
   "list_proxy_profiles", "create_proxy_profile", "update_proxy_profile", "delete_proxy_profile", "test_proxy_listener",
-  "list_certificates", "get_certificate", "import_certificate", "install_certificate_trust", "remove_certificate_trust", "acknowledge_manual_certificate_trust", "delete_certificate",
+  "list_certificates", "get_certificate", "import_certificate", "install_certificate_trust", "remove_certificate_trust", "acknowledge_manual_certificate_trust", "delete_certificate", "get_container_readiness",
   "list_environment_templates", "create_environment_template", "update_environment_template", "delete_environment_template",
 ]);
 
@@ -41,6 +41,7 @@ const COMMAND_TIMEOUTS = Object.freeze({
   remove_certificate_trust: REQUEST_TIMEOUTS.standard,
   acknowledge_manual_certificate_trust: REQUEST_TIMEOUTS.standard,
   delete_certificate: REQUEST_TIMEOUTS.destructive,
+  get_container_readiness: REQUEST_TIMEOUTS.fast,
   list_environment_templates: REQUEST_TIMEOUTS.fast,
   create_environment_template: REQUEST_TIMEOUTS.standard,
   update_environment_template: REQUEST_TIMEOUTS.standard,

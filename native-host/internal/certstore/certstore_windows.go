@@ -133,6 +133,27 @@ func findExactFingerprint(api windowsCertAPI, store windows.Handle, fingerprint 
 	}
 }
 
+func (s WindowsTrustStore) Verify(der []byte, fingerprint string) (bool, error) {
+	if err := verifyManagedFingerprint(der, fingerprint); err != nil {
+		return false, err
+	}
+	api := s.windowsAPI()
+	store, err := api.openCurrentUserRoot()
+	if err != nil {
+		return false, err
+	}
+	defer api.closeStore(store)
+	context, encoded, err := findExactFingerprint(api, store, fingerprint)
+	if err != nil {
+		return false, err
+	}
+	if context == nil {
+		return false, nil
+	}
+	defer api.freeCertificate(context)
+	return encodedCertificateMatchesManagedDER(encoded, der), nil
+}
+
 func (s WindowsTrustStore) Install(der []byte, fingerprint string) (bool, error) {
 	if err := verifyManagedFingerprint(der, fingerprint); err != nil {
 		return false, err
@@ -153,6 +174,13 @@ func (s WindowsTrustStore) Install(der []byte, fingerprint string) (bool, error)
 	}
 	if err := api.addNew(store, der); err != nil {
 		return false, err
+	}
+	verified, err := s.Verify(der, fingerprint)
+	if err != nil {
+		return false, err
+	}
+	if !verified {
+		return false, errors.New("certificate was not verified in CurrentUser\\Root after installation")
 	}
 	return false, nil
 }
@@ -179,5 +207,15 @@ func (s WindowsTrustStore) Remove(der []byte, fingerprint string) error {
 		return errors.New("encoded certificate bytes do not match the managed DER")
 	}
 	// deleteCertificate consumes context, so do not free it separately.
-	return api.deleteCertificate(context)
+	if err := api.deleteCertificate(context); err != nil {
+		return err
+	}
+	verified, err := s.Verify(der, fingerprint)
+	if err != nil {
+		return err
+	}
+	if verified {
+		return errors.New("certificate remained in CurrentUser\\Root after removal")
+	}
+	return nil
 }

@@ -16,7 +16,10 @@ export function validateContainer(input) {
   if ([...value.icon].length > 8 || /[\u0000-\u001f\u007f]/.test(value.icon)) throw new Error("Icon must contain at most 8 visible characters.");
   if (!["chrome", "chromium", "edge", "brave", "custom"].includes(value.browserType)) throw new Error("Choose a supported browser.");
   if (!value.browserExecutable) throw new Error("Choose a browser executable.");
-  if (!["direct", "proxy"].includes(value.networkMode)) throw new Error("Invalid network mode.");
+  if (!["direct", "template", "proxy"].includes(value.networkMode)) throw new Error("Invalid network mode.");
+  if (value.networkMode === "direct" && (value.proxyProfileId || value.environmentTemplateId)) throw new Error("Direct mode cannot include proxy or template references.");
+  if (value.networkMode === "template" && !value.environmentTemplateId) throw new Error("Select an environment template.");
+  if (value.networkMode === "template" && value.proxyProfileId) throw new Error("Template mode cannot include a proxy override.");
   if (value.networkMode === "proxy" && !value.proxyProfileId) throw new Error("Select a proxy profile.");
   return value;
 }

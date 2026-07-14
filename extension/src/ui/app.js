@@ -11,6 +11,7 @@ const state = {
   proxies: [],
   certificates: [],
   templates: [],
+  host: null,
   status: { loading: true, connected: false }, 
   preferences: { sort: "name", filter: "all" }, 
   browsers: [] 
@@ -39,11 +40,13 @@ async function refreshApp() {
     state.proxies = proxies;
     state.certificates = certificates;
     state.templates = templates;
+    state.host = status;
     state.browsers = status.detectedBrowsers || [];
     state.status = { loading: false, connected: true, version: status.hostVersion };
     $("#data-directory").textContent = status.dataDirectory; 
     $("#extension-id").textContent = chrome.runtime.id;
   } catch (error) { 
+    state.host = null;
     state.status = { loading: false, connected: false, error: error.message }; 
   }
   

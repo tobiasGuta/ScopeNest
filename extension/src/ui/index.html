@@ -118,7 +118,7 @@
 
   <dialog id="container-dialog" aria-labelledby="dialog-title">
     <form id="container-form" method="dialog">
-      <div class="dialog-head"><div><p class="eyebrow" id="dialog-kind">CONTAINER</p><h2 id="dialog-title">Create container</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog">×</button></div>
+      <div class="dialog-head"><div><p class="eyebrow" id="dialog-kind">CONTAINER</p><h2 id="dialog-title">Create container</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
       <input id="container-id" type="hidden">
       <input id="temporary" type="hidden" value="false">
       <label>Name<input id="name" name="name" required maxlength="80" placeholder="Target — User A"></label>
@@ -133,6 +133,7 @@
         <label>Network Mode
           <select id="network-mode" name="networkMode">
             <option value="direct">Direct (System default)</option>
+            <option value="template">Inherit template</option>
             <option value="proxy">Proxy Profile</option>
           </select>
         </label>
@@ -141,11 +142,11 @@
         </label>
       </div>
 
-      <label>Environment Template<select id="environment-template" name="environmentTemplateId"></select></label>
+      <label id="environment-template-wrap">Environment Template<select id="environment-template" name="environmentTemplateId"></select></label>
 
       <label class="checkbox"><input id="launch-after" type="checkbox"><span>Launch after saving</span></label>
       <p id="form-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="button ghost" value="cancel">Cancel</button><button id="save" class="button primary" value="default">Save container</button></div>
+      <div class="dialog-actions"><button class="button ghost" value="cancel" type="button">Cancel</button><button id="save" class="button primary" value="default">Save container</button></div>
     </form>
   </dialog>
 
@@ -154,6 +155,7 @@
       <div class="dialog-head"><div><p class="eyebrow">PROXY PROFILE</p><h2 id="proxy-dialog-title">Create proxy profile</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
       <input id="proxy-id" type="hidden">
       <label>Name<input id="proxy-name" required maxlength="80" placeholder="Burp Suite Local"></label>
+      <label class="checkbox"><input id="proxy-enabled" type="checkbox"><span>Enabled</span></label>
       <div class="form-row">
         <label>Protocol
           <select id="proxy-protocol" required>
@@ -166,6 +168,20 @@
       </div>
       <label>Port<input id="proxy-port" type="number" required min="1" max="65535" placeholder="8080"></label>
       <label>Bypass Rules (One per line)<textarea id="proxy-bypass" rows="3" placeholder="localhost&#10;127.0.0.1"></textarea></label>
+      <label>Associated Certificates
+        <select id="proxy-certs" multiple size="4"></select>
+      </label>
+      <label class="checkbox"><input id="proxy-health-enabled" type="checkbox"><span>Listener health check</span></label>
+      <div class="form-row">
+        <label>Timeout (ms)<input id="proxy-timeout" type="number" min="100" max="10000" step="100" required></label>
+        <label>When unavailable
+          <select id="proxy-unavailable" required>
+            <option value="warn">Warn</option>
+            <option value="block">Block</option>
+            <option value="direct">Direct fallback</option>
+          </select>
+        </label>
+      </div>
       <p id="proxy-form-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions"><button type="button" class="button ghost" value="cancel">Cancel</button><button id="proxy-save" class="button primary" value="default">Save proxy</button></div>
     </form>
@@ -189,6 +205,7 @@
       <div class="dialog-head"><div><p class="eyebrow">TEMPLATE</p><h2 id="template-dialog-title">Create Template</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
       <input id="template-id" type="hidden">
       <label>Name<input id="template-name" required maxlength="80" placeholder="Web Pentest Setup"></label>
+      <label>Description<textarea id="template-description" rows="3" maxlength="1000"></textarea></label>
       <label>Proxy Profile
         <select id="template-proxy"><option value="">None</option></select>
       </label>

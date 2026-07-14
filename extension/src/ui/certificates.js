@@ -1,5 +1,5 @@
 import { request, toast } from "./api.js";
-import { button, toggleMenu, confirmDelete } from "./common.js";
+import { button, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
 import { certificateTrustView } from "./state.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -34,8 +34,8 @@ export function initCertificates(state, refreshApp) {
     if (state.host?.capabilities?.trustInstallation === false) {
       const message = document.createElement("p"); message.className = "meta";
       message.textContent = cert.trustState === "manual_trust_acknowledged_unverified"
-        ? "Manual trust was acknowledged for this exact Linux fingerprint. ScopeNest has not verified system trust."
-        : "Manually install this exact certificate in the Linux trust store, then acknowledge the fingerprint.";
+        ? "Manual trust acknowledged for this exact fingerprint. ScopeNest has not verified browser or operating-system trust."
+        : "Manually trust this exact certificate, then acknowledge its fingerprint.";
       actions.append(message);
       if (state.host?.capabilities?.manualTrustAcknowledgment === true && cert.trustState !== "manual_trust_acknowledged_unverified") {
         actions.append(button("Acknowledge exact fingerprint", "button secondary", async () => {
@@ -83,7 +83,7 @@ export function initCertificates(state, refreshApp) {
       let binary = "";
       for (const byte of bytes) binary += String.fromCharCode(byte);
       await request("import_certificate", { displayName: $("#cert-name").value, contentBase64: btoa(binary), expectedSize: file.size });
-      toast("Certificate imported."); $("#cert-dialog").close(); await refreshApp();
+      toast("Certificate imported."); certDialog.close(); await refreshApp();
     } catch (error) {
       $("#cert-form-error").textContent = error.message; $("#cert-form-error").hidden = false;
     } finally { $("#cert-save").disabled = false; }
@@ -95,7 +95,14 @@ export function initCertificates(state, refreshApp) {
     else $("#certificate-list").replaceChildren(...certificates.map(renderCard));
   }
 
-  $("#import-certificate").addEventListener("click", () => { $("#cert-form").reset(); $("#cert-form-error").hidden = true; $("#cert-dialog").showModal(); $("#cert-name").focus(); });
+  const certDialog = bindDialogControls($("#cert-dialog"), {
+    form: $("#cert-form"),
+    error: $("#cert-form-error"),
+    opener: () => document.activeElement,
+    initialFocus: () => $("#cert-name"),
+  });
+
+  $("#import-certificate").addEventListener("click", () => certDialog.open());
   $("#cert-form")?.addEventListener("submit", saveForm);
   return { renderCertificates };
 }

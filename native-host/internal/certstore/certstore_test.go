@@ -43,12 +43,17 @@ func importBytes(t *testing.T, manager *Manager, raw []byte) (*StagedCertificate
 
 func (m *mockTrustStore) Scope() string   { return "mock" }
 func (m *mockTrustStore) Supported() bool { return true }
+func (m *mockTrustStore) Verify([]byte, string) (bool, error) {
+	return m.installed && !m.removed, nil
+}
 func (m *mockTrustStore) Install(der []byte, fingerprint string) (bool, error) {
 	m.installed = true
+	m.removed = false
 	return false, nil
 }
-func (m *mockTrustStore) Remove(der []byte, fingerprint string) error {
+func (m *mockTrustStore) Remove([]byte, string) error {
 	m.removed = true
+	m.installed = false
 	return nil
 }
 

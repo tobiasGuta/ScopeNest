@@ -51,3 +51,34 @@ export function confirmDelete(title, message, onConfirm) {
     }
   }, { once: true });
 }
+
+export function bindDialogControls(dialog, { form, error, opener, initialFocus, reset } = {}) {
+  let lastOpener = null;
+  const open = () => {
+    lastOpener = opener?.() || document.activeElement;
+    form?.reset();
+    if (error) error.hidden = true;
+    reset?.();
+    dialog.showModal();
+    initialFocus?.()?.focus();
+  };
+  const close = (event) => {
+    event?.preventDefault();
+    dialog.close();
+  };
+  dialog.querySelectorAll('[value="cancel"], [aria-label="Close dialog"]').forEach((control) => {
+    control.addEventListener("click", close);
+  });
+  dialog.addEventListener("close", () => {
+    if (error) {
+      error.textContent = "";
+      error.hidden = true;
+    }
+    form?.reset();
+    reset?.();
+    if (lastOpener && typeof lastOpener.focus === "function") {
+      lastOpener.focus();
+    }
+  });
+  return { open, close };
+}

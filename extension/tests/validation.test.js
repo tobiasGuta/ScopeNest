@@ -32,3 +32,11 @@ test("sorts containers by name, recency, and creation", () => {
   assert.equal(sortContainers(items, "lastUsed")[0].name, "Alpha");
   assert.equal(sortContainers(items, "created")[0].name, "Alpha");
 });
+
+test("validates explicit direct, template inheritance, and proxy override modes", () => {
+  assert.equal(validateContainer({ ...valid, networkMode: "template", environmentTemplateId: "template-id" }).networkMode, "template");
+  assert.equal(validateContainer({ ...valid, networkMode: "proxy", proxyProfileId: "proxy-id", environmentTemplateId: "template-id" }).proxyProfileId, "proxy-id");
+  assert.throws(() => validateContainer({ ...valid, networkMode: "direct", environmentTemplateId: "template-id" }));
+  assert.throws(() => validateContainer({ ...valid, networkMode: "template" }));
+  assert.throws(() => validateContainer({ ...valid, networkMode: "template", environmentTemplateId: "template-id", proxyProfileId: "proxy-id" }));
+});

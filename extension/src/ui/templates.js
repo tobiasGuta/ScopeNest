@@ -1,5 +1,5 @@
 import { request, toast } from "./api.js";
-import { button, toggleMenu, confirmDelete } from "./common.js";
+import { button, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -44,12 +44,13 @@ export function initTemplates(state, refreshApp) {
   }
 
   function openDialog(template = null) {
-    $("#template-form").reset();
+    templateDialog.open();
     $("#template-id").value = template?.id || "";
     $("#template-dialog-title").textContent = template ? "Edit Template" : "Create Template";
     $("#template-save").textContent = template ? "Save changes" : "Create template";
     
     $("#template-name").value = template?.name || "";
+    $("#template-description").value = template?.description || "";
     
     const proxySelect = $("#template-proxy");
     proxySelect.replaceChildren(Object.assign(document.createElement("option"), {value: "", textContent: "None"}));
@@ -63,15 +64,13 @@ export function initTemplates(state, refreshApp) {
     for (const c of state.certificates || []) {
       const opt = document.createElement("option");
       opt.value = c.id;
-      opt.textContent = c.name;
+      opt.textContent = c.displayName || `Certificate ${c.sha256Fingerprint || c.id}`;
       if (template?.certificateIds?.includes(c.id)) {
         opt.selected = true;
       }
       certsSelect.append(opt);
     }
     
-    $("#template-form-error").hidden = true;
-    $("#template-dialog").showModal();
     $("#template-name").focus();
   }
 
@@ -83,6 +82,7 @@ export function initTemplates(state, refreshApp) {
     
     const input = {
       name: $("#template-name").value,
+      description: $("#template-description").value,
       proxyProfileId: $("#template-proxy").value || undefined,
       certificateIds: selectedCerts,
     };
@@ -97,7 +97,7 @@ export function initTemplates(state, refreshApp) {
         await request("create_environment_template", input);
         toast("Template created.");
       }
-      $("#template-dialog").close();
+      templateDialog.close();
       await refreshApp();
     } catch (error) {
       $("#template-form-error").textContent = error.message;
@@ -115,6 +115,13 @@ export function initTemplates(state, refreshApp) {
       $("#template-list").replaceChildren(...templates.map(renderCard));
     }
   }
+
+  const templateDialog = bindDialogControls($("#template-dialog"), {
+    form: $("#template-form"),
+    error: $("#template-form-error"),
+    opener: () => document.activeElement,
+    initialFocus: () => $("#template-name"),
+  });
 
   $("#new-template").addEventListener("click", () => openDialog());
   $("#template-form")?.addEventListener("submit", saveForm);

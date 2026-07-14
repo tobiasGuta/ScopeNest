@@ -19,8 +19,12 @@ func (h *Host) listEnvironmentTemplates() ([]model.EnvironmentTemplate, error) {
 
 func validateTemplateInput(t *model.EnvironmentTemplate) error {
 	t.Name = strings.TrimSpace(t.Name)
-	if t.Name == "" || len(t.Name) > 64 {
-		return fmt.Errorf("name must be between 1 and 64 characters")
+	t.Description = strings.TrimSpace(t.Description)
+	if t.Name == "" || len(t.Name) > 80 || hasControl(t.Name) {
+		return fmt.Errorf("name must be between 1 and 80 characters")
+	}
+	if len(t.Description) > 1000 || hasControl(t.Description) {
+		return fmt.Errorf("description is too long or contains control characters")
 	}
 	if t.ProxyProfileID != "" {
 		if err := security.ValidateID(t.ProxyProfileID); err != nil {
@@ -30,11 +34,19 @@ func validateTemplateInput(t *model.EnvironmentTemplate) error {
 	if len(t.CertificateIDs) > 50 {
 		return fmt.Errorf("too many certificates")
 	}
+	seen := map[string]bool{}
+	certificateIDs := make([]string, 0, len(t.CertificateIDs))
 	for _, cid := range t.CertificateIDs {
 		if err := security.ValidateID(cid); err != nil {
 			return fmt.Errorf("invalid certificate ID")
 		}
+		if seen[cid] {
+			return fmt.Errorf("duplicate certificate ID")
+		}
+		seen[cid] = true
+		certificateIDs = append(certificateIDs, cid)
 	}
+	t.CertificateIDs = certificateIDs
 	return nil
 }
 
@@ -71,7 +83,7 @@ func (h *Host) createEnvironmentTemplate(raw json.RawMessage) (model.Environment
 				}
 			}
 			if !found {
-				return fail("REFERENCE_ERROR", "proxy profile not found")
+				return fail("PROXY_PROFILE_NOT_FOUND", "proxy profile not found")
 			}
 		}
 		for _, cid := range in.CertificateIDs {
@@ -83,7 +95,7 @@ func (h *Host) createEnvironmentTemplate(raw json.RawMessage) (model.Environment
 				}
 			}
 			if !found {
-				return fail("REFERENCE_ERROR", "certificate not found: %s", cid)
+				return fail("CERTIFICATE_NOT_FOUND", "certificate not found: %s", cid)
 			}
 		}
 
@@ -124,7 +136,7 @@ func (h *Host) updateEnvironmentTemplate(raw json.RawMessage) (model.Environment
 				}
 			}
 			if !found {
-				return fail("REFERENCE_ERROR", "proxy profile not found")
+				return fail("PROXY_PROFILE_NOT_FOUND", "proxy profile not found")
 			}
 		}
 		for _, cid := range in.CertificateIDs {
@@ -136,7 +148,7 @@ func (h *Host) updateEnvironmentTemplate(raw json.RawMessage) (model.Environment
 				}
 			}
 			if !found {
-				return fail("REFERENCE_ERROR", "certificate not found: %s", cid)
+				return fail("CERTIFICATE_NOT_FOUND", "certificate not found: %s", cid)
 			}
 		}
 

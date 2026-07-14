@@ -8,7 +8,7 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 410px; min-height: 560px; color: var(--ink); background: var(--canvas); font-size: 14px; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 :focus-visible { outline: 3px solid rgba(92, 70, 220, .32); outline-offset: 2px; }
@@ -36,7 +36,8 @@ section { margin-bottom: 14px; }
 .quick-open, .host-details { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .section-heading h2 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
-.quick-open input, select, .toolbar input, dialog input { width: 100%; border: 1px solid #d9d5e6; border-radius: 9px; background: #fff; color: var(--ink); padding: 9px 10px; min-height: 38px; }
+.quick-open input, select, .toolbar input, dialog input, dialog textarea { width: 100%; border: 1px solid #d9d5e6; border-radius: 9px; background: #fff; color: var(--ink); padding: 9px 10px; min-height: 38px; }
+dialog textarea { resize: vertical; }
 input::placeholder { color: #9893aa; }
 .quick-row { margin-top: 8px; display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; }
 .button { border: 1px solid transparent; border-radius: 9px; padding: 8px 11px; min-height: 36px; font-weight: 650; white-space: nowrap; }
