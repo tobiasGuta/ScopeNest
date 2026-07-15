@@ -1,6 +1,6 @@
 import { request, toast } from "./api.js";
 import { button, formatDate, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
-import { validateContainer, validateWebURL } from "../shared/validation.js";
+import { containerCommandData, validateContainer, validateWebURL } from "../shared/validation.js";
 import { connectionView, visibleContainers } from "./state.js";
 import { savePreferences } from "../shared/storage.js";
 import { checkReadiness } from "./readiness.js";
@@ -164,7 +164,8 @@ export function initContainers(state, refreshApp) {
       });
       const id = $("#container-id").value, temporary = $("#temporary").value === "true";
       $("#save").disabled = true;
-      const saved = id ? await request("update_container", { id, ...input }) : await request(temporary ? "create_temporary_container" : "create_container", input);
+      const commandData = containerCommandData(input);
+      const saved = id ? await request("update_container", { id, ...commandData }) : await request(temporary ? "create_temporary_container" : "create_container", commandData);
       state.preferences = await savePreferences(chrome.storage.local, { lastBrowser: { type: input.browserType, path: input.browserExecutable } });
       containerDialog.close(); toast(id ? "Container updated." : "Container created.");
       if (temporary || $("#launch-after").checked) await launch(saved.id, ""); else await refreshApp();
@@ -173,7 +174,21 @@ export function initContainers(state, refreshApp) {
   }
 
   async function duplicate(container) {
-    try { await request("create_container", { name: `${container.name} copy`.slice(0, 80), color: container.color, icon: container.icon || "", browserType: container.browserType, browserExecutable: container.browserExecutable, networkMode: container.networkMode, proxyProfileId: container.proxyProfileId, environmentTemplateId: container.environmentTemplateId }); toast("Container duplicated with a fresh profile."); await refreshApp(); }
+    try {
+      const input = validateContainer({
+        name: `${container.name} copy`.slice(0, 80),
+        color: container.color,
+        icon: container.icon || "",
+        browserType: container.browserType,
+        browserExecutable: container.browserExecutable,
+        networkMode: container.networkMode || "direct",
+        proxyProfileId: container.proxyProfileId,
+        environmentTemplateId: container.environmentTemplateId
+      });
+      await request("create_container", containerCommandData(input));
+      toast("Container duplicated with a fresh profile.");
+      await refreshApp();
+    }
     catch (error) { toast(error.message, true); }
   }
 

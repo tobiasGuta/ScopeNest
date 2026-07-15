@@ -24,6 +24,20 @@ export function validateContainer(input) {
   return value;
 }
 
+export function containerCommandData(container) {
+  const data = {
+    name: container.name,
+    color: container.color,
+    icon: container.icon,
+    browserType: container.browserType,
+    browserExecutable: container.browserExecutable,
+  };
+  if (container.networkMode && container.networkMode !== "direct") data.networkMode = container.networkMode;
+  if (container.proxyProfileId) data.proxyProfileId = container.proxyProfileId;
+  if (container.environmentTemplateId) data.environmentTemplateId = container.environmentTemplateId;
+  return data;
+}
+
 export function validateWebURL(raw, { allowEmpty = true } = {}) {
   const value = typeof raw === "string" ? raw.trim() : "";
   if (!value && allowEmpty) return "";

@@ -349,6 +349,21 @@ func TestCreateContainerAndPersistMetadata(t *testing.T) {
 	}
 }
 
+func TestCreateContainerAcceptsExplicitDirectNetworkMode(t *testing.T) {
+	h, st, executable := testHost(t)
+	response := h.Handle(request(t, "create_container", map[string]any{"name": "Direct", "color": "#725cff", "icon": "", "browserType": "custom", "browserExecutable": executable, "networkMode": "direct"}))
+	if !response.Success {
+		t.Fatalf("create failed: %#v", response.Error)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].NetworkMode != "direct" {
+		t.Fatalf("direct network mode was not persisted: %#v", db.Containers)
+	}
+}
+
 func TestCreateContainerRejectsMissingNetworkReferences(t *testing.T) {
 	h, _, executable := testHost(t)
 	missingID := "11111111111111111111111111111111"
