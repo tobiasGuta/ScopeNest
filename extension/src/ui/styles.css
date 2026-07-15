@@ -64,6 +64,12 @@ input::placeholder { color: #9893aa; }
 .badge.launching { color: #4b36c8; background: var(--brand-soft); }.badge.launching::before { content: ""; width: 7px; height: 7px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .badge.temporary { background: #fff4d9; color: #805f08; }
 .card-menu { border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 5px 8px; font-size: 18px; }.card-menu:hover { background: var(--canvas); }
+.certificate-card .card-head { align-items: center; }
+.certificate-card .card-icon { font-size: 12px; font-weight: 800; letter-spacing: 0; color: #9f1d4a; }
+.certificate-card .card-menu { flex: 0 0 auto; font-size: 13px; font-weight: 650; }
+.certificate-card .card-actions { grid-template-columns: 1fr; }
+.certificate-card .card-actions .button { width: 100%; }
+.certificate-fingerprint { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; line-height: 1.35; }
 .profile-path { margin: 9px 0 0 48px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 10px 13px 12px 17px; border-top: 1px solid var(--line); }
 .action-menu { position: absolute; z-index: 2; right: 12px; top: 43px; width: 150px; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: white; box-shadow: var(--shadow); }

@@ -3,8 +3,11 @@ export function initNavigation() {
   const views = document.querySelectorAll("main > .view");
 
   // Determine if we are in the popup (toolbar) or side panel.
-  // The popup typically has a small width or is opened via browser action.
-  const isPopup = !window.matchMedia("(min-width: 600px)").matches && window.name !== "side-panel";
+  // The side panel can be narrower than 600px, so it is marked explicitly by
+  // the manifest path instead of inferred only from viewport width.
+  const params = new URLSearchParams(window.location.search);
+  const isSidePanel = params.get("surface") === "side-panel" || window.name === "side-panel";
+  const isPopup = !isSidePanel && !window.matchMedia("(min-width: 600px)").matches;
   
   if (isPopup) {
     document.querySelector(".tab-bar").style.display = "none";

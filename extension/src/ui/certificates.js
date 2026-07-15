@@ -7,17 +7,18 @@ const $ = (selector) => document.querySelector(selector);
 export function initCertificates(state, refreshApp) {
   function renderCard(cert) {
     const card = document.createElement("article");
-    card.className = "container-card";
+    card.className = "container-card certificate-card";
     card.style.setProperty("--container-color", "#e91e63");
     card.dataset.id = cert.id;
 
     const main = document.createElement("div"); main.className = "card-main";
     const head = document.createElement("div"); head.className = "card-head";
-    const icon = document.createElement("div"); icon.className = "card-icon"; icon.textContent = "Certificate";
+    const icon = document.createElement("div"); icon.className = "card-icon"; icon.textContent = "CA";
     const title = document.createElement("div"); title.className = "card-title";
     const heading = document.createElement("h3"); heading.textContent = cert.displayName; title.append(heading);
     const meta = document.createElement("div"); meta.className = "meta";
     const fingerprint = document.createElement("span");
+    fingerprint.className = "certificate-fingerprint";
     fingerprint.textContent = `SHA-256: ${cert.sha256Fingerprint}`;
     meta.append(fingerprint);
     const trustView = certificateTrustView(cert);
