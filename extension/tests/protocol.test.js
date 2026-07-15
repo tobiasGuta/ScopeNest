@@ -25,6 +25,13 @@ test("uses command-specific native request timeouts", () => {
   assert.throws(() => timeoutForCommand("run_anything"), /Unsupported command/);
 });
 
+test("allowlists Linux manual trust acknowledgment with exact binding fields", () => {
+  const data = { id: "certificate-id", sha256Fingerprint: "AA:BB", platform: "linux" };
+  const request = createRequest("acknowledge_manual_certificate_trust", data, "manual-trust-1");
+  assert.deepEqual(request.data, data);
+  assert.equal(timeoutForCommand(request.command), REQUEST_TIMEOUTS.standard);
+});
+
 test("parses matching successful responses", () => {
   const request = createRequest("ping", undefined, "request-2");
   const data = parseResponse({ version: 1, success: true, requestId: "request-2", command: "ping", data: { hostVersion: "1.0.0" }, timestamp: new Date().toISOString() }, request);

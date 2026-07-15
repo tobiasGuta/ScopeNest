@@ -8,9 +8,13 @@ func atomicReplace(source, destination string) error {
 	if err := os.Rename(source, destination); err != nil {
 		return err
 	}
-	dir, err := os.Open(safeParent(destination))
+	return syncParent(destination)
+}
+
+func syncParent(path string) error {
+	dir, err := os.Open(safeParent(path))
 	if err != nil {
-		return nil
+		return err
 	}
 	defer dir.Close()
 	return dir.Sync()

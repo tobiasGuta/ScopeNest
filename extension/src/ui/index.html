@@ -21,59 +21,104 @@
       <button id="retry" type="button" class="text-button" hidden>Retry</button>
     </div>
 
+    <nav class="tab-bar" aria-label="Primary navigation">
+      <button type="button" class="tab active" data-tab="containers" aria-selected="true">Containers</button>
+      <button type="button" class="tab" data-tab="proxies" aria-selected="false">Proxies</button>
+      <button type="button" class="tab" data-tab="certificates" aria-selected="false">Certificates</button>
+      <button type="button" class="tab" data-tab="templates" aria-selected="false">Templates</button>
+    </nav>
+
     <main>
-      <section class="quick-open" aria-labelledby="quick-open-title">
-        <div class="section-heading"><h2 id="quick-open-title">Open in a container</h2></div>
-        <label class="sr-only" for="quick-url">URL</label>
-        <input id="quick-url" type="url" inputmode="url" placeholder="https://example.com" autocomplete="url">
-        <div class="quick-row">
-          <label class="sr-only" for="quick-container">Container</label>
-          <select id="quick-container" aria-label="Choose a container"><option value="">Choose container</option></select>
-          <button id="open-url" class="button secondary" type="button">Open URL</button>
-          <button id="open-current" class="button secondary" type="button">Current page</button>
-        </div>
-      </section>
-
-      <section class="containers" aria-labelledby="containers-title">
-        <div class="section-heading actions-heading">
-          <div><h2 id="containers-title">Containers</h2><span id="container-count" class="muted"></span></div>
-          <div class="heading-buttons">
-            <button id="new-temporary" class="button ghost" type="button">+ Temporary</button>
-            <button id="new-container" class="button primary" type="button">+ New</button>
+      <div id="view-containers" class="view">
+        <section class="quick-open" aria-labelledby="quick-open-title">
+          <div class="section-heading"><h2 id="quick-open-title">Open in a container</h2></div>
+          <label class="sr-only" for="quick-url">URL</label>
+          <input id="quick-url" type="url" inputmode="url" placeholder="https://example.com" autocomplete="url">
+          <div class="quick-row">
+            <label class="sr-only" for="quick-container">Container</label>
+            <select id="quick-container" aria-label="Choose a container"><option value="">Choose container</option></select>
+            <button id="open-url" class="button secondary" type="button">Open URL</button>
+            <button id="open-current" class="button secondary" type="button">Current page</button>
           </div>
-        </div>
-        <div class="toolbar">
-          <label class="search"><span aria-hidden="true">⌕</span><span class="sr-only">Search containers</span><input id="search" type="search" placeholder="Search containers"></label>
-          <label><span class="sr-only">Filter containers</span><select id="filter" aria-label="Filter containers"><option value="all">All</option><option value="running">Running</option><option value="saved">Saved</option><option value="temporary">Temporary</option></select></label>
-          <label><span class="sr-only">Sort containers</span><select id="sort" aria-label="Sort containers"><option value="name">Name</option><option value="lastUsed">Last used</option><option value="created">Newest</option></select></label>
-        </div>
-        <div id="loading" class="state-card"><span class="spinner" aria-hidden="true"></span><p>Loading containers…</p></div>
-        <div id="empty" class="state-card" hidden>
-          <div class="empty-icon" aria-hidden="true">▣</div>
-          <h3>No containers yet</h3>
-          <p>Create a context for each role or account you test.</p>
-          <button id="empty-create" class="button primary" type="button">Create your first container</button>
-        </div>
-        <div id="no-results" class="state-card" hidden><h3>No matches</h3><p>Try a different search or filter.</p></div>
-        <div id="container-list" class="container-list" aria-live="polite"></div>
-      </section>
+        </section>
 
-      <section class="host-details" aria-labelledby="host-title">
-        <button id="host-toggle" class="disclosure" type="button" aria-expanded="false" aria-controls="host-content">
-          <span><strong id="host-title">Native host details</strong><small id="host-summary">Checking connection…</small></span><span aria-hidden="true">⌄</span>
-        </button>
-        <div id="host-content" hidden>
-          <dl><div><dt>Data directory</dt><dd id="data-directory">—</dd></div><div><dt>Extension ID</dt><dd id="extension-id">—</dd></div></dl>
-          <button id="cleanup-temporary" class="button ghost" type="button">Clean temporary profiles</button>
-          <p class="privacy-note">Local only. No analytics, ads, page-content access, or external network service.</p>
-        </div>
-      </section>
+        <section class="containers" aria-labelledby="containers-title">
+          <div class="section-heading actions-heading">
+            <div><h2 id="containers-title">Containers</h2><span id="container-count" class="muted"></span></div>
+            <div class="heading-buttons">
+              <button id="new-temporary" class="button ghost" type="button">+ Temporary</button>
+              <button id="new-container" class="button primary" type="button">+ New</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <label class="search"><span aria-hidden="true">⌕</span><span class="sr-only">Search containers</span><input id="search" type="search" placeholder="Search containers"></label>
+            <label><span class="sr-only">Filter containers</span><select id="filter" aria-label="Filter containers"><option value="all">All</option><option value="running">Running</option><option value="saved">Saved</option><option value="temporary">Temporary</option></select></label>
+            <label><span class="sr-only">Sort containers</span><select id="sort" aria-label="Sort containers"><option value="name">Name</option><option value="lastUsed">Last used</option><option value="created">Newest</option></select></label>
+          </div>
+          <div id="loading" class="state-card"><span class="spinner" aria-hidden="true"></span><p>Loading containers…</p></div>
+          <div id="empty" class="state-card" hidden>
+            <div class="empty-icon" aria-hidden="true">▣</div>
+            <h3>No containers yet</h3>
+            <p>Create a context for each role or account you test.</p>
+            <button id="empty-create" class="button primary" type="button">Create your first container</button>
+          </div>
+          <div id="no-results" class="state-card" hidden><h3>No matches</h3><p>Try a different search or filter.</p></div>
+          <div id="container-list" class="container-list" aria-live="polite"></div>
+        </section>
+
+        <section class="host-details" aria-labelledby="host-title">
+          <button id="host-toggle" class="disclosure" type="button" aria-expanded="false" aria-controls="host-content">
+            <span><strong id="host-title">Native host details</strong><small id="host-summary">Checking connection…</small></span><span aria-hidden="true">⌄</span>
+          </button>
+          <div id="host-content" hidden>
+            <dl><div><dt>Data directory</dt><dd id="data-directory">—</dd></div><div><dt>Extension ID</dt><dd id="extension-id">—</dd></div></dl>
+            <button id="cleanup-temporary" class="button ghost" type="button">Clean temporary profiles</button>
+            <p class="privacy-note">Local only. No analytics, ads, page-content access, or external network service.</p>
+          </div>
+        </section>
+      </div>
+
+      <div id="view-proxies" class="view" hidden>
+        <section class="proxies" aria-labelledby="proxies-title">
+          <div class="section-heading actions-heading">
+            <div><h2 id="proxies-title">Proxy Profiles</h2></div>
+            <div class="heading-buttons">
+              <button id="new-proxy" class="button primary" type="button">+ New Proxy</button>
+            </div>
+          </div>
+          <div id="proxy-list" class="item-list" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <div id="view-certificates" class="view" hidden>
+        <section class="certificates" aria-labelledby="certificates-title">
+          <div class="section-heading actions-heading">
+            <div><h2 id="certificates-title">Certificates</h2></div>
+            <div class="heading-buttons">
+              <button id="import-certificate" class="button primary" type="button">Import Certificate</button>
+            </div>
+          </div>
+          <div id="certificate-list" class="item-list" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <div id="view-templates" class="view" hidden>
+        <section class="templates" aria-labelledby="templates-title">
+          <div class="section-heading actions-heading">
+            <div><h2 id="templates-title">Environment Templates</h2></div>
+            <div class="heading-buttons">
+              <button id="new-template" class="button primary" type="button">+ New Template</button>
+            </div>
+          </div>
+          <div id="template-list" class="item-list" aria-live="polite"></div>
+        </section>
+      </div>
     </main>
   </div>
 
   <dialog id="container-dialog" aria-labelledby="dialog-title">
     <form id="container-form" method="dialog">
-      <div class="dialog-head"><div><p class="eyebrow" id="dialog-kind">CONTAINER</p><h2 id="dialog-title">Create container</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog">×</button></div>
+      <div class="dialog-head"><div><p class="eyebrow" id="dialog-kind">CONTAINER</p><h2 id="dialog-title">Create container</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
       <input id="container-id" type="hidden">
       <input id="temporary" type="hidden" value="false">
       <label>Name<input id="name" name="name" required maxlength="80" placeholder="Target — User A"></label>
@@ -83,9 +128,93 @@
       </div>
       <label>Browser<select id="browser" name="browser" required></select></label>
       <label id="browser-path-wrap">Browser executable<input id="browser-path" name="browserPath" required placeholder="Full path to browser executable" spellcheck="false"></label>
+      
+      <div class="form-row">
+        <label>Network Mode
+          <select id="network-mode" name="networkMode">
+            <option value="direct">Direct (System default)</option>
+            <option value="template">Inherit template</option>
+            <option value="proxy">Proxy Profile</option>
+          </select>
+        </label>
+        <label id="proxy-profile-wrap" hidden>Proxy Profile
+          <select id="proxy-profile" name="proxyProfileId"></select>
+        </label>
+      </div>
+
+      <label id="environment-template-wrap">Environment Template<select id="environment-template" name="environmentTemplateId"></select></label>
+
       <label class="checkbox"><input id="launch-after" type="checkbox"><span>Launch after saving</span></label>
       <p id="form-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="button ghost" value="cancel">Cancel</button><button id="save" class="button primary" value="default">Save container</button></div>
+      <div class="dialog-actions"><button class="button ghost" value="cancel" type="button">Cancel</button><button id="save" class="button primary" value="default">Save container</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="proxy-dialog" aria-labelledby="proxy-dialog-title">
+    <form id="proxy-form" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">PROXY PROFILE</p><h2 id="proxy-dialog-title">Create proxy profile</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
+      <input id="proxy-id" type="hidden">
+      <label>Name<input id="proxy-name" required maxlength="80" placeholder="Burp Suite Local"></label>
+      <label class="checkbox"><input id="proxy-enabled" type="checkbox"><span>Enabled</span></label>
+      <div class="form-row">
+        <label>Protocol
+          <select id="proxy-protocol" required>
+            <option value="http">HTTP proxy</option>
+            <option value="https">HTTPS proxy</option>
+            <option value="socks5">SOCKS5</option>
+            <option value="socks4">SOCKS4</option>
+          </select>
+        </label>
+        <label>Host<input id="proxy-host" required placeholder="127.0.0.1"></label>
+      </div>
+      <label>Port<input id="proxy-port" type="number" required min="1" max="65535" placeholder="8080"></label>
+      <label>Bypass Rules (One per line)<textarea id="proxy-bypass" rows="3" placeholder="localhost&#10;127.0.0.1"></textarea></label>
+      <label>Associated Certificates
+        <select id="proxy-certs" multiple size="4"></select>
+      </label>
+      <label class="checkbox"><input id="proxy-health-enabled" type="checkbox"><span>Listener health check</span></label>
+      <div class="form-row">
+        <label>Timeout (ms)<input id="proxy-timeout" type="number" min="100" max="10000" step="100" required></label>
+        <label>When unavailable
+          <select id="proxy-unavailable" required>
+            <option value="warn">Warn</option>
+            <option value="block">Block</option>
+            <option value="direct">Direct fallback</option>
+          </select>
+        </label>
+      </div>
+      <p id="proxy-form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="button ghost" value="cancel">Cancel</button><button id="proxy-save" class="button primary" value="default">Save proxy</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="cert-dialog" aria-labelledby="cert-dialog-title">
+    <form id="cert-form" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">CERTIFICATE</p><h2 id="cert-dialog-title">Import Certificate</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
+      <input id="cert-id" type="hidden">
+      <label>Name<input id="cert-name" required maxlength="80" placeholder="CA Certificate"></label>
+      <label id="cert-file-wrap">Certificate File (DER/PEM)
+        <input id="cert-file" type="file" accept=".der,.cer,.crt,.pem" required>
+      </label>
+      <p id="cert-form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="button ghost" value="cancel">Cancel</button><button id="cert-save" class="button primary" value="default">Import</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="template-dialog" aria-labelledby="template-dialog-title">
+    <form id="template-form" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">TEMPLATE</p><h2 id="template-dialog-title">Create Template</h2></div><button class="icon-button" value="cancel" aria-label="Close dialog" type="button">×</button></div>
+      <input id="template-id" type="hidden">
+      <label>Name<input id="template-name" required maxlength="80" placeholder="Web Pentest Setup"></label>
+      <label>Description<textarea id="template-description" rows="3" maxlength="1000"></textarea></label>
+      <label>Proxy Profile
+        <select id="template-proxy"><option value="">None</option></select>
+      </label>
+      <label>Certificates to install
+        <select id="template-certs" multiple size="4"></select>
+      </label>
+      <p id="template-form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="button ghost" value="cancel">Cancel</button><button id="template-save" class="button primary" value="default">Save template</button></div>
     </form>
   </dialog>
 

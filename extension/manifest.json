@@ -19,7 +19,7 @@
     }
   },
   "side_panel": {
-    "default_path": "src/ui/index.html"
+    "default_path": "src/ui/index.html?surface=side-panel"
   },
   "icons": {
     "16": "assets/icon-16.png",

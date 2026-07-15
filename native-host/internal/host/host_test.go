@@ -1,18 +1,28 @@
 package host
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/scopenest/scopenest/native-host/internal/browser"
+	"github.com/scopenest/scopenest/native-host/internal/certstore"
 	"github.com/scopenest/scopenest/native-host/internal/model"
 	"github.com/scopenest/scopenest/native-host/internal/protocol"
+	"github.com/scopenest/scopenest/native-host/internal/security"
 	"github.com/scopenest/scopenest/native-host/internal/store"
 )
 
@@ -171,7 +181,7 @@ func testHost(t *testing.T) (*Host, *store.Store, string) {
 	if err := os.WriteFile(executable, []byte("test browser placeholder"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	return New(st, nil), st, executable
+	return New(st, nil, nil), st, executable
 }
 
 func request(t *testing.T, command string, data any) protocol.Request {
@@ -300,7 +310,7 @@ func TestHostProcessLaunchReservationHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(st, nil)
+	h := New(st, nil, nil)
 	_, _, reserveErr := h.reserveLaunch(os.Getenv("SCOPENEST_HOST_HELPER_ID"))
 	result := "reserved"
 	if reserveErr != nil {
@@ -336,6 +346,42 @@ func TestCreateContainerAndPersistMetadata(t *testing.T) {
 	db, _ := st.Load()
 	if len(db.Containers) != 1 || db.Containers[0].ID != c.ID {
 		t.Fatalf("container not persisted: %#v", db)
+	}
+}
+
+func TestCreateContainerAcceptsExplicitDirectNetworkMode(t *testing.T) {
+	h, st, executable := testHost(t)
+	response := h.Handle(request(t, "create_container", map[string]any{"name": "Direct", "color": "#725cff", "icon": "", "browserType": "custom", "browserExecutable": executable, "networkMode": "direct"}))
+	if !response.Success {
+		t.Fatalf("create failed: %#v", response.Error)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].NetworkMode != "direct" {
+		t.Fatalf("direct network mode was not persisted: %#v", db.Containers)
+	}
+}
+
+func TestCreateContainerRejectsMissingNetworkReferences(t *testing.T) {
+	h, _, executable := testHost(t)
+	missingID := "11111111111111111111111111111111"
+	for _, tc := range []struct {
+		name      string
+		input     containerInput
+		errorCode string
+	}{
+		{"missing proxy", containerInput{Name: "Missing proxy", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "proxy", ProxyProfileID: missingID}, "PROXY_PROFILE_NOT_FOUND"},
+		{"missing template", containerInput{Name: "Missing template", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "template", EnvironmentTemplateID: missingID}, "ENVIRONMENT_TEMPLATE_NOT_FOUND"},
+		{"ambiguous direct", containerInput{Name: "Ambiguous", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "direct", ProxyProfileID: missingID}, "INVALID_NETWORK_CONFIGURATION"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := h.Handle(request(t, "create_container", tc.input))
+			if response.Success || response.ErrorCode != tc.errorCode {
+				t.Fatalf("unexpected response: %#v", response)
+			}
+		})
 	}
 }
 
@@ -882,7 +928,7 @@ func TestLaunchReservationBlocksAnotherHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2 := New(secondStore, nil)
+	h2 := New(secondStore, nil, nil)
 
 	reserved, token, err := h1.reserveLaunch(container.ID)
 	if err != nil {
@@ -924,7 +970,7 @@ func TestConcurrentLaunchReservationsHaveSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2 := New(secondStore, nil)
+	h2 := New(secondStore, nil, nil)
 
 	type result struct {
 		token string
@@ -1044,7 +1090,7 @@ func TestStaleLaunchReservationCanBeRecovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock = clock.Add(launchReservationTTL + time.Second)
-	h2 := New(st, nil)
+	h2 := New(st, nil, nil)
 	h2.now = func() time.Time { return clock }
 	reserved, secondToken, err := h2.reserveLaunch(container.ID)
 	if err != nil {
@@ -1095,5 +1141,787 @@ func TestLaunchFailureReleasesReservation(t *testing.T) {
 	}
 	if db.Containers[0].State != model.StateStopped || db.Containers[0].LaunchToken != "" || db.Containers[0].LaunchReservedAt != nil || db.Containers[0].Running {
 		t.Fatalf("failed launch left a reservation behind: %#v", db.Containers[0])
+	}
+}
+
+type recordingLauncher struct {
+	mu      sync.Mutex
+	args    []string
+	calls   int
+	process browser.Process
+}
+
+func (l *recordingLauncher) Start(_ string, args []string) (browser.Process, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	l.args = append([]string(nil), args...)
+	return l.process, nil
+}
+
+func (l *recordingLauncher) snapshot() (int, []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls, append([]string(nil), l.args...)
+}
+
+func proxyLaunchHost(t *testing.T, behavior string) (*Host, *store.Store, *recordingLauncher, string, *int) {
+	t.Helper()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "chrome")
+	if os.PathSeparator == '\\' {
+		executable += ".exe"
+	}
+	if err := os.WriteFile(executable, []byte("test browser placeholder"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	containerID, _ := security.NewID()
+	proxyID, _ := security.NewID()
+	profile, _ := st.EnsureProfile(containerID)
+	now := time.Now().UTC()
+	err = st.Update(func(db *model.Database) error {
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: proxyID, Name: "Proxy", Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 65530, UnavailableBehavior: behavior, HealthCheck: model.ProxyHealthCheck{Enabled: true, TimeoutMs: 100}})
+		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Proxy launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "proxy", ProxyProfileID: proxyID})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &recordingLauncher{process: newControlledProcess(9010, true)}
+	h := New(st, launcher, nil)
+	h.watcher = func(string, browser.Process) {}
+	checks := 0
+	h.proxyDial = func(string, string, time.Duration) (net.Conn, error) {
+		checks++
+		return nil, errors.New("listener unavailable")
+	}
+	return h, st, launcher, containerID, &checks
+}
+
+func containsArgument(args []string, prefix string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProxyUnavailableWarnChecksListenerWarnsAndLaunchesWithProxyNoDirectFallback(t *testing.T) {
+	h, _, launcher, id, checks := proxyLaunchHost(t, "warn")
+	launched, err := h.launch(launchInput{ID: id, URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if *checks != 1 || calls != 1 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	if launched.ProxyWarning == nil || launched.ProxyWarning.Code != "PROXY_LISTENER_UNAVAILABLE" || launched.DirectFallbackUsed {
+		t.Fatalf("unexpected launch metadata: %#v", launched)
+	}
+	if !containsArgument(args, "--proxy-server=") || !containsArgument(args, "--disable-quic") {
+		t.Fatalf("proxy arguments missing: %v", args)
+	}
+}
+
+func TestProxyUnavailableBlockChecksListenerPreventsStartupAndReturnsStructuredError(t *testing.T) {
+	h, st, launcher, id, checks := proxyLaunchHost(t, "block")
+	response := h.Handle(request(t, "launch_container", launchInput{ID: id, URL: "https://example.com"}))
+	if response.Success || response.ErrorCode != "PROXY_LISTENER_UNAVAILABLE" || response.Error == nil {
+		t.Fatalf("unexpected structured response: %#v", response)
+	}
+	calls, _ := launcher.snapshot()
+	if *checks != 1 || calls != 0 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	db, _ := st.Load()
+	if db.Containers[0].State != model.StateStopped {
+		t.Fatalf("reservation not released: %#v", db.Containers[0])
+	}
+}
+
+func TestProxyUnavailableDirectChecksListenerLaunchesWithoutProxyOrQUICAndReportsFallback(t *testing.T) {
+	h, _, launcher, id, checks := proxyLaunchHost(t, "direct")
+	launched, err := h.launch(launchInput{ID: id, URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if *checks != 1 || calls != 1 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	if !launched.DirectFallbackUsed || launched.ProxyWarning != nil {
+		t.Fatalf("fallback not reported: %#v", launched)
+	}
+	if containsArgument(args, "--proxy-server=") || containsArgument(args, "--disable-quic") {
+		t.Fatalf("direct fallback retained proxy arguments: %v", args)
+	}
+}
+
+func TestProxyHealthCheckDisabledLaunchesWithProxyWithoutListenerCheck(t *testing.T) {
+	h, _, launcher, id, checks := proxyLaunchHost(t, "block")
+	if err := h.store.Update(func(db *model.Database) error {
+		db.ProxyProfiles[0].HealthCheck.Enabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launched, err := h.launch(launchInput{ID: id, URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if *checks != 0 || calls != 1 {
+		t.Fatalf("checks=%d launches=%d", *checks, calls)
+	}
+	if launched.DirectFallbackUsed || launched.ProxyWarning != nil || !containsArgument(args, "--proxy-server=") {
+		t.Fatalf("unexpected launch metadata or args: %#v %v", launched, args)
+	}
+}
+
+func TestDisabledProxyProfileBlocksLaunchWithoutDirectFallback(t *testing.T) {
+	h, _, launcher, id, _ := proxyLaunchHost(t, "warn")
+	if err := h.store.Update(func(db *model.Database) error {
+		db.ProxyProfiles[0].Enabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := h.Handle(request(t, "launch_container", launchInput{ID: id}))
+	if response.Success || response.ErrorCode != "PROXY_PROFILE_DISABLED" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	calls, _ := launcher.snapshot()
+	if calls != 0 {
+		t.Fatalf("disabled proxy launched browser: %d", calls)
+	}
+}
+
+func TestProxyInputNormalizesOnlyStrictLocalHosts(t *testing.T) {
+	proxy := model.ProxyProfile{Name: "Local", Enabled: true, Protocol: "http", Host: "localhost", Port: 8080, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: true, TimeoutMs: 1500}}
+	if err := validateProxyInput(&proxy); err != nil {
+		t.Fatal(err)
+	}
+	if proxy.Host != "127.0.0.1" {
+		t.Fatalf("localhost was not frozen to loopback literal: %q", proxy.Host)
+	}
+	for _, host := range []string{"example.test", "192.168.1.10", "10.0.0.1"} {
+		proxy := model.ProxyProfile{Name: "Local", Enabled: true, Protocol: "http", Host: host, Port: 8080, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: true, TimeoutMs: 1500}}
+		if err := validateProxyInput(&proxy); err == nil {
+			t.Fatalf("accepted non-strict-local host %q", host)
+		}
+	}
+}
+
+func TestTemplateInheritanceLaunchUsesTemplateProxyAndCertificates(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.installCertificateTrust(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(t.TempDir(), "chrome")
+	if os.PathSeparator == '\\' {
+		executable += ".exe"
+	}
+	if err := os.WriteFile(executable, []byte("test browser placeholder"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	containerID, _ := security.NewID()
+	proxyID, _ := security.NewID()
+	templateID, _ := security.NewID()
+	profile, _ := st.EnsureProfile(containerID)
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: proxyID, Name: "Template proxy", Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080, CertificateIDs: []string{certificate.ID}, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: false, TimeoutMs: 1500}})
+		db.EnvironmentTemplates = append(db.EnvironmentTemplates, model.EnvironmentTemplate{ID: templateID, Name: "Web Pentest", ProxyProfileID: proxyID, CertificateIDs: []string{certificate.ID}, CreatedAt: now, UpdatedAt: now})
+		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Template launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "template", EnvironmentTemplateID: templateID})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &recordingLauncher{process: newControlledProcess(9100, true)}
+	h.launcher = launcher
+	h.watcher = func(string, browser.Process) {}
+	launched, err := h.launch(launchInput{ID: containerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, args := launcher.snapshot()
+	if calls != 1 || launched.DirectFallbackUsed || !containsExactArgument(args, "--proxy-server=http=http://127.0.0.1:8080;https=http://127.0.0.1:8080") {
+		t.Fatalf("template proxy was not used: calls=%d launched=%#v args=%v", calls, launched, args)
+	}
+}
+
+func TestContainerProxyOverrideUsesProxyInsteadOfTemplateProxy(t *testing.T) {
+	h, st, executable := testHost(t)
+	h.launcher = &recordingLauncher{process: newControlledProcess(9200, true)}
+	h.watcher = func(string, browser.Process) {}
+	containerID, _ := security.NewID()
+	proxyA, _ := security.NewID()
+	proxyB, _ := security.NewID()
+	templateID, _ := security.NewID()
+	profile, _ := st.EnsureProfile(containerID)
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.ProxyProfiles = append(db.ProxyProfiles,
+			model.ProxyProfile{ID: proxyA, Name: "Proxy A", Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: 8080, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: false, TimeoutMs: 1500}},
+			model.ProxyProfile{ID: proxyB, Name: "Proxy B", Enabled: true, Protocol: "socks5", Host: "::1", Port: 1080, UnavailableBehavior: "warn", HealthCheck: model.ProxyHealthCheck{Enabled: false, TimeoutMs: 1500}},
+		)
+		db.EnvironmentTemplates = append(db.EnvironmentTemplates, model.EnvironmentTemplate{ID: templateID, Name: "Template", ProxyProfileID: proxyA, CreatedAt: now, UpdatedAt: now})
+		db.Containers = append(db.Containers, model.Container{ID: containerID, Name: "Override launch", Color: "#725cff", CreatedAt: now, UpdatedAt: now, ProfilePath: profile, BrowserType: "custom", BrowserExecutable: executable, State: model.StateStopped, NetworkMode: "proxy", ProxyProfileID: proxyB, EnvironmentTemplateID: templateID})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.launch(launchInput{ID: containerID}); err != nil {
+		t.Fatal(err)
+	}
+	_, args := h.launcher.(*recordingLauncher).snapshot()
+	if !containsExactArgument(args, "--proxy-server=socks5://[::1]:1080") {
+		t.Fatalf("override proxy was not used: %v", args)
+	}
+}
+
+func containsExactArgument(args []string, expected string) bool {
+	for _, arg := range args {
+		if arg == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLinuxManualTrustAcknowledgmentBindsCertificateFingerprintPlatformAndTimestamp(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	id, _ := security.NewID()
+	fingerprint := "AA:BB"
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates = append(db.Certificates, model.Certificate{ID: id, SHA256Fingerprint: fingerprint, TrustState: model.CertificateTrustUntrusted})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := New(st, failingLauncher{}, nil)
+	h.platform = "linux"
+	h.now = func() time.Time { return now }
+	response := h.Handle(request(t, "acknowledge_manual_certificate_trust", acknowledgeManualTrustInput{ID: id, SHA256Fingerprint: fingerprint, Platform: "linux"}))
+	if !response.Success {
+		t.Fatalf("acknowledgment failed: %#v", response)
+	}
+	certificate := response.Data.(model.Certificate)
+	ack := certificate.ManualTrustAcknowledgment
+	if certificate.Trusted || certificate.TrustState != model.CertificateTrustManualAcknowledgedUnverified || ack == nil || ack.CertificateID != id || ack.SHA256Fingerprint != fingerprint || ack.Platform != "linux" || !ack.AcknowledgedAt.Equal(now) {
+		t.Fatalf("invalid acknowledgment: %#v", certificate)
+	}
+}
+
+func TestLinuxManualTrustAcknowledgmentFingerprintChangeInvalidatesState(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	id, _ := security.NewID()
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates = append(db.Certificates, model.Certificate{ID: id, SHA256Fingerprint: "AA", TrustState: model.CertificateTrustManualAcknowledgedUnverified, ManualTrustAcknowledgment: &model.ManualTrustAcknowledgment{CertificateID: id, SHA256Fingerprint: "AA", Platform: "linux", AcknowledgedAt: now}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(db *model.Database) error { db.Certificates[0].SHA256Fingerprint = "BB"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := db.Certificates[0]
+	if certificate.ManualTrustAcknowledgment != nil || certificate.TrustState != model.CertificateTrustUntrusted || certificate.Trusted {
+		t.Fatalf("stale acknowledgment remained valid: %#v", certificate)
+	}
+}
+
+type ownershipTrustStore struct {
+	already  bool
+	installs int
+	removals int
+}
+
+func (*ownershipTrustStore) Scope() string   { return "test" }
+func (*ownershipTrustStore) Supported() bool { return true }
+func (s *ownershipTrustStore) Verify([]byte, string) (bool, error) {
+	return s.already || s.installs > s.removals, nil
+}
+func (s *ownershipTrustStore) Install([]byte, string) (bool, error) {
+	s.installs++
+	return s.already, nil
+}
+func (s *ownershipTrustStore) Remove([]byte, string) error { s.removals++; return nil }
+
+type blockingTrustStore struct {
+	mu        sync.Mutex
+	installed bool
+	started   chan struct{}
+	release   chan struct{}
+	once      sync.Once
+}
+
+func (s *blockingTrustStore) Scope() string   { return "test" }
+func (s *blockingTrustStore) Supported() bool { return true }
+func (s *blockingTrustStore) Verify([]byte, string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.installed, nil
+}
+func (s *blockingTrustStore) Install([]byte, string) (bool, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	already := s.installed
+	s.installed = true
+	return already, nil
+}
+func (s *blockingTrustStore) Remove([]byte, string) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.installed = false
+	return nil
+}
+
+type faultTrustStore struct {
+	installed     bool
+	installErr    error
+	removeErr     error
+	installMutate bool
+	removeMutate  bool
+}
+
+func (s *faultTrustStore) Scope() string   { return "test" }
+func (s *faultTrustStore) Supported() bool { return true }
+func (s *faultTrustStore) Verify([]byte, string) (bool, error) {
+	return s.installed, nil
+}
+func (s *faultTrustStore) Install([]byte, string) (bool, error) {
+	already := s.installed
+	if s.installMutate {
+		s.installed = true
+	}
+	return already, s.installErr
+}
+func (s *faultTrustStore) Remove([]byte, string) error {
+	if s.removeMutate {
+		s.installed = false
+	}
+	return s.removeErr
+}
+
+func importHostTestCertificate(t *testing.T, st *store.Store, trust certstore.TrustStore) (*Host, model.Certificate) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Host test"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := certstore.NewManager(st, trust)
+	staged, err := manager.Import("Host CA", base64.StdEncoding.EncodeToString(der), len(der))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := manager.CommitImport(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(st, failingLauncher{}, manager), certificate
+}
+
+func TestInstallCertificateTrustNeverClaimsPreexistingCertificate(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{already: true}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	updated, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Trusted || updated.InstalledByScopeNest {
+		t.Fatalf("pre-existing certificate ownership was claimed: %#v", updated)
+	}
+}
+
+func TestRepeatedCertificateTrustInstallPreservesScopeNestOwnership(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	first, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.InstalledByScopeNest {
+		t.Fatalf("new installation did not record ownership: %#v", first)
+	}
+	trust.already = true
+	second, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.InstalledByScopeNest {
+		t.Fatalf("repeated installation downgraded ownership: %#v", second)
+	}
+}
+
+func TestConcurrentCertificateTrustInstallHasSingleWinner(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := &blockingTrustStore{started: make(chan struct{}), release: make(chan struct{})}
+	h1, certificate := importHostTestCertificate(t, st, trust)
+	secondStore, err := store.New(st.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2 := New(secondStore, failingLauncher{}, certstore.NewManager(secondStore, trust))
+	result := make(chan error, 1)
+	go func() {
+		_, err := h1.installCertificateTrust(certificate.ID)
+		result <- err
+	}()
+	waitForSignal(t, trust.started, "blocked certificate trust install")
+	if _, err := h2.installCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_TRUST_OPERATION_PENDING" {
+		t.Fatalf("second install did not see pending operation: %v", err)
+	}
+	close(trust.release)
+	if err := <-result; err != nil {
+		t.Fatalf("winning install failed: %v", err)
+	}
+}
+
+func TestTrustedCertificateDeletionIsRejectedUntilTrustRemoved(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.installCertificateTrust(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deleteCertificate(certificate.ID); ErrorCode(err) != "CERTIFICATE_TRUST_MUST_BE_REMOVED_FIRST" {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+	if _, err := h.removeCertificateTrust(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deleteCertificate(certificate.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTrustedUnownedCertificateCanBeDeletedFromLibraryOnly(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{already: true}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	updated, err := h.installCertificateTrust(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Trusted || updated.InstalledByScopeNest {
+		t.Fatalf("expected trusted unowned certificate: %#v", updated)
+	}
+	deleted, err := h.deleteCertificate(certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted["windowsTrustUnchanged"] != true {
+		t.Fatalf("library-only deletion was not reported: %#v", deleted)
+	}
+	if trust.removals != 0 {
+		t.Fatalf("library-only deletion removed Windows trust: %d", trust.removals)
+	}
+}
+
+func TestCertificateDeletionTombstoneRestoresWhenMetadataStillExists(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	source := filepath.Join(certRoot, certificate.ID)
+	staged := filepath.Join(certRoot, ".delete-"+certificate.ID+"-restore")
+	if err := os.Rename(source, staged); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{CertificateID: certificate.ID, OperationID: "restore", SourceDirectory: source, StagedDirectory: staged, State: "deleting", CreatedAt: now, UpdatedAt: now})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileCertificateDeletions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "certificate.der")); err != nil {
+		t.Fatalf("certificate directory was not restored: %v", err)
+	}
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged directory remained: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 0 || len(db.Certificates) != 1 {
+		t.Fatalf("tombstone not cleared after restore: %#v", db)
+	}
+}
+
+func TestCertificateDeletionTombstoneFinishesWhenMetadataAbsent(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	source := filepath.Join(certRoot, certificate.ID)
+	staged := filepath.Join(certRoot, ".delete-"+certificate.ID+"-finish")
+	if err := os.Rename(source, staged); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates = nil
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{CertificateID: certificate.ID, OperationID: "finish", SourceDirectory: source, StagedDirectory: staged, State: "deleting", CreatedAt: now, UpdatedAt: now})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileCertificateDeletions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged directory remained: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 0 || len(db.Certificates) != 0 {
+		t.Fatalf("tombstone not cleared after finish: %#v", db)
+	}
+}
+
+func TestCertificateDeletionErrorIsRetriedOnStartup(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	source := filepath.Join(certRoot, certificate.ID)
+	staged := filepath.Join(certRoot, ".delete-"+certificate.ID+"-retry")
+	if err := os.Rename(source, staged); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{
+			CertificateID: certificate.ID, OperationID: "retry", SourceDirectory: source,
+			StagedDirectory: staged, State: "deletion_error", Error: "temporary failure", CreatedAt: now, UpdatedAt: now,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.startupCleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "certificate.der")); err != nil {
+		t.Fatalf("startup did not restore the certificate directory: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 0 {
+		t.Fatalf("retried deletion tombstone remains: %#v", db.CertificateDeletionOps)
+	}
+}
+
+func TestCertificateDeletionErrorBlocksSecondDeletion(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{
+			CertificateID: certificate.ID, OperationID: "unresolved", SourceDirectory: filepath.Join(certRoot, certificate.ID),
+			StagedDirectory: filepath.Join(certRoot, ".delete-unresolved"), State: "deletion_error", Error: "temporary failure", CreatedAt: now, UpdatedAt: now,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deleteCertificate(certificate.ID); ErrorCode(err) != "CERTIFICATE_DELETE_OPERATION_PENDING" {
+		t.Fatalf("second deletion was not blocked: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 1 {
+		t.Fatalf("second deletion operation was created: %#v", db.CertificateDeletionOps)
+	}
+}
+
+func TestReconciliationContinuesAfterOneDeletionError(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	_, first := importHostTestCertificate(t, st, trust)
+	h, second := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	secondSource := filepath.Join(certRoot, second.ID)
+	secondStaged := filepath.Join(certRoot, ".delete-"+second.ID+"-continue")
+	if err := os.Rename(secondSource, secondStaged); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-time.Hour)
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps,
+			model.CertificateDeletionOperation{CertificateID: first.ID, OperationID: "broken", SourceDirectory: filepath.Join(t.TempDir(), "outside"), StagedDirectory: filepath.Join(certRoot, ".delete-broken"), State: "deletion_error", Error: "old error", CreatedAt: old, UpdatedAt: old},
+			model.CertificateDeletionOperation{CertificateID: second.ID, OperationID: "recoverable", SourceDirectory: secondSource, StagedDirectory: secondStaged, State: "deleting", CreatedAt: old, UpdatedAt: old},
+		)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileCertificateDeletions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(secondSource, "certificate.der")); err != nil {
+		t.Fatalf("later deletion operation was not reconciled: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 1 || db.CertificateDeletionOps[0].OperationID != "broken" || db.CertificateDeletionOps[0].Error == "old error" || !db.CertificateDeletionOps[0].UpdatedAt.After(old) {
+		t.Fatalf("reconciliation did not process both operations: %#v", db.CertificateDeletionOps)
+	}
+}
+
+func TestInterruptedInstallingOperationClearsOwnershipWhenTrustStoreWasNotMutated(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &faultTrustStore{installed: false}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if err := st.Update(func(db *model.Database) error {
+		managed := &db.Certificates[0]
+		managed.Trusted = false
+		managed.TrustState = model.CertificateTrustInstalling
+		managed.InstalledByScopeNest = true
+		managed.TrustOperationID = "interrupted-install"
+		managed.TrustOperationFingerprint = managed.SHA256Fingerprint
+		managed.TrustOperationWasTrusted = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileTrustOperations(); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := st.Load()
+	managed := db.Certificates[0]
+	if managed.ID != certificate.ID || managed.Trusted || managed.TrustState != model.CertificateTrustUntrusted || managed.InstalledByScopeNest || managed.TrustOperationID != "" {
+		t.Fatalf("absent failed installation retained false ownership: %#v", managed)
+	}
+}
+
+func TestTrustErrorReconciliationRecoversInstallThatActuallyInstalled(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &faultTrustStore{installErr: errors.New("after install"), installMutate: true}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.installCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_TRUST_INSTALL_FAILED" {
+		t.Fatalf("unexpected install error: %v", err)
+	}
+	if err := h.reconcileTrustOperations(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileTrustOperations(); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := st.Load()
+	cert := db.Certificates[0]
+	if !cert.Trusted || cert.TrustState != model.CertificateTrustTrusted || !cert.InstalledByScopeNest || cert.TrustOperationID != "" || cert.TrustError != "" {
+		t.Fatalf("trust_error install was not recovered: %#v", cert)
+	}
+}
+
+func TestTrustErrorReconciliationRecoversRemovalOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		removeMutate  bool
+		wantTrusted   bool
+		wantState     string
+		wantOwnership bool
+	}{
+		{"left-present", false, true, model.CertificateTrustTrusted, true},
+		{"removed", true, false, model.CertificateTrustUntrusted, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _ := store.New(t.TempDir())
+			trust := &faultTrustStore{installed: true, removeErr: errors.New("remove report"), removeMutate: tc.removeMutate}
+			h, certificate := importHostTestCertificate(t, st, trust)
+			if err := st.Update(func(db *model.Database) error {
+				db.Certificates[0].Trusted = true
+				db.Certificates[0].InstalledByScopeNest = true
+				db.Certificates[0].TrustState = model.CertificateTrustTrusted
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_TRUST_REMOVE_FAILED" {
+				t.Fatalf("unexpected remove error: %v", err)
+			}
+			if err := h.reconcileTrustOperations(); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.reconcileTrustOperations(); err != nil {
+				t.Fatal(err)
+			}
+			db, _ := st.Load()
+			cert := db.Certificates[0]
+			if cert.Trusted != tc.wantTrusted || cert.TrustState != tc.wantState || cert.InstalledByScopeNest != tc.wantOwnership || cert.TrustOperationID != "" || cert.TrustError != "" {
+				t.Fatalf("trust_error removal was not recovered: %#v", cert)
+			}
+		})
+	}
+}
+
+func TestRemoveCertificateTrustNeverRemovesUnownedOrReferencedCertificate(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_NOT_INSTALLED_BY_SCOPENEST" {
+		t.Fatalf("unexpected unowned error: %v", err)
+	}
+	if err := st.Update(func(db *model.Database) error {
+		db.Certificates[0].InstalledByScopeNest = true
+		db.ProxyProfiles = append(db.ProxyProfiles, model.ProxyProfile{ID: "proxy", CertificateIDs: []string{certificate.ID}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_REFERENCE_IN_USE" {
+		t.Fatalf("unexpected reference error: %v", err)
+	}
+	if trust.removals != 0 {
+		t.Fatal("trust store removal was called")
+	}
+}
+
+func TestRemoveCertificateTrustReReadsAndReFingerprintsManagedDER(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if err := st.Update(func(db *model.Database) error { db.Certificates[0].InstalledByScopeNest = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(st.Root(), "resources", "certificates", certificate.ID, "certificate.der")
+	if err := os.WriteFile(path, []byte("tampered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.removeCertificateTrust(certificate.ID); ErrorCode(err) != "CERTIFICATE_READ_FAILED" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if trust.removals != 0 {
+		t.Fatal("tampered DER reached trust store removal")
 	}
 }

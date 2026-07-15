@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectionView, visibleContainers } from "../src/ui/state.js";
+import { certificateTrustView, connectionView, visibleContainers } from "../src/ui/state.js";
 
 const containers = [
   { name: "Admin", browserType: "chrome", icon: "A", running: true, temporary: false, createdAt: "2026-01-01", lastLaunchedAt: "2026-03-01" },
@@ -20,4 +20,12 @@ test("shows native host unavailable state", () => {
 test("shows connected and loading states", () => {
   assert.equal(connectionView({ loading: true }).tone, "loading");
   assert.equal(connectionView({ connected: true, version: "1.0.0" }).tone, "success");
+});
+
+test("labels Linux manual trust acknowledgment as unverified rather than trusted", () => {
+  assert.deepEqual(certificateTrustView({ trustState: "manual_trust_acknowledged_unverified" }), {
+    handled: true,
+    verified: false,
+    label: "Manual trust acknowledged (unverified)",
+  });
 });

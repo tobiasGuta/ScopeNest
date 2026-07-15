@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/scopenest/scopenest/native-host/internal/browser"
+	"github.com/scopenest/scopenest/native-host/internal/certstore"
 	"github.com/scopenest/scopenest/native-host/internal/host"
 	"github.com/scopenest/scopenest/native-host/internal/protocol"
 	"github.com/scopenest/scopenest/native-host/internal/store"
@@ -20,7 +21,11 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
-	h := host.New(st, browser.ExecLauncher{})
+	if err := st.Migrate(); err != nil {
+		os.Exit(1)
+	}
+	certMgr := certstore.NewManager(st, certstore.NewTrustStore())
+	h := host.New(st, browser.ExecLauncher{}, certMgr)
 	runMessageLoop(os.Stdin, os.Stdout, h)
 }
 

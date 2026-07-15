@@ -59,6 +59,5 @@ func (p *groupProcess) Terminate() error {
 }
 
 func processGroupExists(pgid int) bool {
-	err := syscall.Kill(-pgid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return processGroupHasLiveMembers(pgid)
 }

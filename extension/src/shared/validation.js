@@ -7,13 +7,35 @@ export function validateContainer(input) {
     icon: typeof input?.icon === "string" ? input.icon.trim() : "",
     browserType: typeof input?.browserType === "string" ? input.browserType : "",
     browserExecutable: typeof input?.browserExecutable === "string" ? input.browserExecutable.trim() : "",
+    networkMode: typeof input?.networkMode === "string" ? input.networkMode : "direct",
+    proxyProfileId: typeof input?.proxyProfileId === "string" ? input.proxyProfileId : undefined,
+    environmentTemplateId: typeof input?.environmentTemplateId === "string" ? input.environmentTemplateId : undefined,
   };
   if (!value.name || [...value.name].length > 80 || /[\u0000-\u001f\u007f]/.test(value.name)) throw new Error("Name must contain 1–80 visible characters.");
   if (!/^#[0-9a-fA-F]{6}$/.test(value.color)) throw new Error("Choose a valid color.");
   if ([...value.icon].length > 8 || /[\u0000-\u001f\u007f]/.test(value.icon)) throw new Error("Icon must contain at most 8 visible characters.");
   if (!["chrome", "chromium", "edge", "brave", "custom"].includes(value.browserType)) throw new Error("Choose a supported browser.");
   if (!value.browserExecutable) throw new Error("Choose a browser executable.");
+  if (!["direct", "template", "proxy"].includes(value.networkMode)) throw new Error("Invalid network mode.");
+  if (value.networkMode === "direct" && (value.proxyProfileId || value.environmentTemplateId)) throw new Error("Direct mode cannot include proxy or template references.");
+  if (value.networkMode === "template" && !value.environmentTemplateId) throw new Error("Select an environment template.");
+  if (value.networkMode === "template" && value.proxyProfileId) throw new Error("Template mode cannot include a proxy override.");
+  if (value.networkMode === "proxy" && !value.proxyProfileId) throw new Error("Select a proxy profile.");
   return value;
+}
+
+export function containerCommandData(container) {
+  const data = {
+    name: container.name,
+    color: container.color,
+    icon: container.icon,
+    browserType: container.browserType,
+    browserExecutable: container.browserExecutable,
+  };
+  if (container.networkMode && container.networkMode !== "direct") data.networkMode = container.networkMode;
+  if (container.proxyProfileId) data.proxyProfileId = container.proxyProfileId;
+  if (container.environmentTemplateId) data.environmentTemplateId = container.environmentTemplateId;
+  return data;
 }
 
 export function validateWebURL(raw, { allowEmpty = true } = {}) {

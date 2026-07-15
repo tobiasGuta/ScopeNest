@@ -55,6 +55,8 @@ Anyone with access to the user's operating-system account may still read or modi
 - Only known browser types are accepted. A custom type still accepts only one executable path, not arguments.
 - URLs are limited to absolute, credential-free `http` and `https` URLs up to 8192 bytes.
 - Browser arguments are fixed and passed separately through Go's `exec.Command`; no shell command is built or invoked.
+- Proxy arguments are built from validated loopback profiles only. ScopeNest never accepts arbitrary Chromium arguments, arbitrary startup commands, interception-tool launch commands, or `--ignore-certificate-errors`.
+- Effective networking is resolved under the metadata lock during launch reservation. Explicit `direct` launches direct, explicit container `proxy` overrides a template proxy, and `template` inherits the template proxy. Broken or disabled references are rejected; ScopeNest does not silently fall back to direct networking.
 - ScopeNest refuses duplicate launches while a recorded process is alive.
 - On Windows, the browser is created suspended, assigned to a private Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and resumed only after assignment succeeds. Closing uses that owned Job Object.
 - On Linux, the browser is created in a dedicated process group. Closing signals only that owned group, first with `SIGTERM` and then with `SIGKILL` after a bounded grace period.
@@ -63,6 +65,16 @@ Anyone with access to the user's operating-system account may still read or modi
 - The process watcher waits for the owned Job Object or process group to empty before changing lifecycle metadata. It also verifies both the current in-memory owner and persisted PID before committing a stopped state.
 
 ScopeNest never uses broad process-name killing or heuristic descendant discovery. Chromium descendants created within the owned Job Object or process group remain controlled, including ordinary launcher handoff. A transfer to an already-running external Chromium process cannot be adopted safely; profile-lock markers continue to block deletion, and closing that browser window normally is the fallback.
+
+## Proxy and certificate protections
+
+- Proxy profiles are validated by the native host for protocol, strict local host (`127.0.0.0/8`, `::1`, or `localhost` normalized to a loopback literal), port, bypass-list length, duplicate bypass rules, duplicate certificate IDs, null/control characters, and argument-injection patterns.
+- A disabled proxy profile returns `PROXY_PROFILE_DISABLED`. Health-check-disabled profiles still launch with the proxy; they only skip listener reachability checks and unavailable-listener behavior.
+- Required template and proxy certificates are merged without duplicates. The native host verifies required managed DER files and trust state before launch; the extension is never trusted as the source of certificate readiness.
+- Windows trust operations are scoped to `CurrentUser\Root`, persist `installing`/`removing`/`trust_error` operation state, verify exact fingerprint and encoded DER after native trust-store changes, and reconcile incomplete operations at startup.
+- Linux manual trust acknowledgment is never represented as verified trust. It is unverified, fingerprint-bound metadata only.
+- Certificate deletion is refused while ScopeNest ownership is recorded, a trust operation is pending, or a proxy/template still references the certificate. Pre-existing trusted certificates can be removed from the ScopeNest library without changing Windows trust. Deletion uses a persisted tombstone so startup can restore or finish interrupted filesystem cleanup.
+- ScopeNest does not download remote certificates, handle private keys, launch proxy tools, install browser extensions automatically, or create a remote listener.
 
 ## Extension permissions
 

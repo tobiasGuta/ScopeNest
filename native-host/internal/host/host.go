@@ -6,14 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/scopenest/scopenest/native-host/internal/browser"
+	"github.com/scopenest/scopenest/native-host/internal/certstore"
 	"github.com/scopenest/scopenest/native-host/internal/model"
 	"github.com/scopenest/scopenest/native-host/internal/protocol"
 	"github.com/scopenest/scopenest/native-host/internal/security"
@@ -31,15 +34,26 @@ var allowedCommands = map[string]bool{
 	"close_container": true, "delete_container": true, "create_temporary_container": true,
 	"cleanup_temporary_containers": true, "get_running_containers": true,
 	"validate_browser_path": true,
+	"list_proxy_profiles":   true, "create_proxy_profile": true, "update_proxy_profile": true,
+	"delete_proxy_profile": true, "test_proxy_listener": true,
+	"list_certificates": true, "import_certificate": true, "get_certificate": true,
+	"install_certificate_trust": true, "remove_certificate_trust": true, "delete_certificate": true,
+	"acknowledge_manual_certificate_trust": true,
+	"get_container_readiness":              true,
+	"list_environment_templates":           true, "create_environment_template": true,
+	"update_environment_template": true, "delete_environment_template": true,
 }
 
 type Host struct {
 	store                  *store.Store
+	certManager            *certstore.Manager
 	launcher               browser.Launcher
 	processes              map[string]browser.Process
 	watcher                func(string, browser.Process)
 	mu                     sync.Mutex
 	now                    func() time.Time
+	platform               string
+	proxyDial              func(string, string, time.Duration) (net.Conn, error)
 	startupCleanup         func() error
 	startupCleanupOnce     sync.Once
 	startupCleanupMu       sync.RWMutex
@@ -54,11 +68,14 @@ type startupCleanupMetadata struct {
 }
 
 type containerInput struct {
-	Name              string `json:"name"`
-	Color             string `json:"color"`
-	Icon              string `json:"icon,omitempty"`
-	BrowserType       string `json:"browserType"`
-	BrowserExecutable string `json:"browserExecutable,omitempty"`
+	Name                  string `json:"name"`
+	Color                 string `json:"color"`
+	Icon                  string `json:"icon,omitempty"`
+	BrowserType           string `json:"browserType"`
+	BrowserExecutable     string `json:"browserExecutable,omitempty"`
+	NetworkMode           string `json:"networkMode,omitempty"`
+	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
+	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
 }
 
 type idInput struct {
@@ -66,12 +83,15 @@ type idInput struct {
 }
 
 type updateInput struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Color             string `json:"color"`
-	Icon              string `json:"icon,omitempty"`
-	BrowserType       string `json:"browserType"`
-	BrowserExecutable string `json:"browserExecutable,omitempty"`
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Color                 string `json:"color"`
+	Icon                  string `json:"icon,omitempty"`
+	BrowserType           string `json:"browserType"`
+	BrowserExecutable     string `json:"browserExecutable,omitempty"`
+	NetworkMode           string `json:"networkMode,omitempty"`
+	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
+	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
 }
 
 type launchInput struct {
@@ -83,16 +103,28 @@ type validatePathInput struct {
 	Path string `json:"path"`
 }
 
-func New(st *store.Store, launcher browser.Launcher) *Host {
+func New(st *store.Store, launcher browser.Launcher, certManager *certstore.Manager) *Host {
 	h := &Host{
 		store:                  st,
+		certManager:            certManager,
 		launcher:               launcher,
 		processes:              map[string]browser.Process{},
 		now:                    func() time.Time { return time.Now().UTC() },
+		platform:               runtime.GOOS,
+		proxyDial:              net.DialTimeout,
 		startupCleanupMetadata: startupCleanupMetadata{State: "pending"},
 	}
 	h.watcher = h.watch
 	h.startupCleanup = func() error {
+		if h.certManager != nil {
+			h.certManager.CleanupStaging()
+			if err := h.reconcileCertificateDeletions(); err != nil {
+				return err
+			}
+			if err := h.reconcileTrustOperations(); err != nil {
+				return err
+			}
+		}
 		_, err := h.cleanup()
 		return err
 	}
@@ -238,6 +270,80 @@ func (h *Host) dispatch(req protocol.Request) (any, error) {
 			return nil, fail("INVALID_BROWSER_PATH", "%v", err)
 		}
 		return map[string]any{"valid": true, "path": path}, nil
+	case "list_certificates":
+		if err := requireEmptyData(req.Data); err != nil {
+			return nil, err
+		}
+		return h.listCertificates()
+	case "import_certificate":
+		return h.importCertificate(req.Data)
+	case "get_certificate":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		return h.getCertificate(in.ID)
+	case "install_certificate_trust":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		return h.installCertificateTrust(in.ID)
+	case "remove_certificate_trust":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		return h.removeCertificateTrust(in.ID)
+	case "acknowledge_manual_certificate_trust":
+		return h.acknowledgeManualCertificateTrust(req.Data)
+	case "delete_certificate":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		return h.deleteCertificate(in.ID)
+	case "get_container_readiness":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		if err := security.ValidateID(in.ID); err != nil {
+			return nil, fail("INVALID_CONTAINER_ID", "%v", err)
+		}
+		return h.getContainerReadiness(in.ID)
+	case "list_proxy_profiles":
+		if err := requireEmptyData(req.Data); err != nil {
+			return nil, err
+		}
+		return h.listProxyProfiles()
+	case "create_proxy_profile":
+		return h.createProxyProfile(req.Data)
+	case "update_proxy_profile":
+		return h.updateProxyProfile(req.Data)
+	case "delete_proxy_profile":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		return h.deleteProxyProfile(in.ID)
+	case "test_proxy_listener":
+		return h.testProxyListener(req.Data)
+	case "list_environment_templates":
+		if err := requireEmptyData(req.Data); err != nil {
+			return nil, err
+		}
+		return h.listEnvironmentTemplates()
+	case "create_environment_template":
+		return h.createEnvironmentTemplate(req.Data)
+	case "update_environment_template":
+		return h.updateEnvironmentTemplate(req.Data)
+	case "delete_environment_template":
+		var in idInput
+		if err := decodeData(req.Data, &in); err != nil {
+			return nil, err
+		}
+		return h.deleteEnvironmentTemplate(in.ID)
 	default:
 		return nil, fail("UNKNOWN_COMMAND", "command is not supported")
 	}
@@ -248,7 +354,30 @@ func (h *Host) status() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"hostVersion": HostVersion, "protocolVersion": protocol.Version, "dataDirectory": h.store.Root(), "containerCount": len(db.Containers), "detectedBrowsers": browser.Detect(), "startupCleanup": h.startupCleanupStatus()}, nil
+	caps := map[string]any{
+		"trustInstallation":         false,
+		"manualTrustAcknowledgment": h.platform == "linux",
+	}
+	if h.certManager != nil && h.certManager.Trust.Supported() {
+		caps["trustInstallation"] = true
+	}
+	result := map[string]any{
+		"hostVersion":      HostVersion,
+		"protocolVersion":  protocol.Version,
+		"dataDirectory":    h.store.Root(),
+		"containerCount":   len(db.Containers),
+		"detectedBrowsers": browser.Detect(),
+		"startupCleanup":   h.startupCleanupStatus(),
+		"capabilities":     caps,
+		"platform":         h.platform,
+		"brokenReferences": store.BrokenReferences(db),
+	}
+	if h.certManager != nil {
+		if issues, auditErr := h.certManager.AuditResources(); auditErr == nil {
+			result["certificateResourceIssues"] = issues
+		}
+	}
+	return result, nil
 }
 
 func (h *Host) reconcile() error {
@@ -336,6 +465,24 @@ func validateContainerInput(in containerInput) (containerInput, error) {
 		return in, fail("INVALID_BROWSER_PATH", "%v", err)
 	}
 	in.BrowserExecutable = path
+
+	if in.NetworkMode != "" && in.NetworkMode != "direct" && in.NetworkMode != "template" && in.NetworkMode != "proxy" {
+		return in, fail("INVALID_NETWORK_MODE", "network mode must be direct, template, or proxy")
+	}
+	if in.NetworkMode == "" {
+		in.NetworkMode = "direct"
+	}
+	if in.ProxyProfileID != "" {
+		if err := security.ValidateID(in.ProxyProfileID); err != nil {
+			return in, fail("INVALID_PROXY_PROFILE_ID", "%v", err)
+		}
+	}
+	if in.EnvironmentTemplateID != "" {
+		if err := security.ValidateID(in.EnvironmentTemplateID); err != nil {
+			return in, fail("INVALID_TEMPLATE_ID", "%v", err)
+		}
+	}
+
 	return in, nil
 }
 
@@ -353,8 +500,14 @@ func (h *Host) create(in containerInput, temporary bool) (model.Container, error
 		return model.Container{}, err
 	}
 	now := h.now()
-	c := model.Container{ID: id, Name: in.Name, Color: in.Color, Icon: in.Icon, CreatedAt: now, UpdatedAt: now, Temporary: temporary, ProfilePath: profile, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, State: model.StateStopped}
-	if err := h.store.Update(func(db *model.Database) error { db.Containers = append(db.Containers, c); return nil }); err != nil {
+	c := model.Container{ID: id, Name: in.Name, Color: in.Color, Icon: in.Icon, CreatedAt: now, UpdatedAt: now, Temporary: temporary, ProfilePath: profile, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, State: model.StateStopped, NetworkMode: in.NetworkMode, ProxyProfileID: in.ProxyProfileID, EnvironmentTemplateID: in.EnvironmentTemplateID}
+	if err := h.store.Update(func(db *model.Database) error {
+		if err := validateContainerReferences(db, in); err != nil {
+			return err
+		}
+		db.Containers = append(db.Containers, c)
+		return nil
+	}); err != nil {
 		_ = h.store.RemoveContainerDirectory(id)
 		return model.Container{}, err
 	}
@@ -365,17 +518,21 @@ func (h *Host) update(in updateInput) (model.Container, error) {
 	if err := security.ValidateID(in.ID); err != nil {
 		return model.Container{}, fail("INVALID_CONTAINER_ID", "%v", err)
 	}
-	validated, err := validateContainerInput(containerInput{Name: in.Name, Color: in.Color, Icon: in.Icon, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable})
+	validated, err := validateContainerInput(containerInput{Name: in.Name, Color: in.Color, Icon: in.Icon, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, NetworkMode: in.NetworkMode, ProxyProfileID: in.ProxyProfileID, EnvironmentTemplateID: in.EnvironmentTemplateID})
 	if err != nil {
 		return model.Container{}, err
 	}
 	var result model.Container
 	err = h.store.Update(func(db *model.Database) error {
+		if err := validateContainerReferences(db, containerInput{Name: validated.Name, Color: validated.Color, Icon: validated.Icon, BrowserType: validated.BrowserType, BrowserExecutable: validated.BrowserExecutable, NetworkMode: validated.NetworkMode, ProxyProfileID: validated.ProxyProfileID, EnvironmentTemplateID: validated.EnvironmentTemplateID}); err != nil {
+			return err
+		}
 		for i := range db.Containers {
 			if db.Containers[i].ID == in.ID {
 				c := &db.Containers[i]
 				c.Name, c.Color, c.Icon = validated.Name, validated.Color, validated.Icon
 				c.BrowserType, c.BrowserExecutable = validated.BrowserType, validated.BrowserExecutable
+				c.NetworkMode, c.ProxyProfileID, c.EnvironmentTemplateID = validated.NetworkMode, validated.ProxyProfileID, validated.EnvironmentTemplateID
 				c.UpdatedAt, result = h.now(), *c
 				return nil
 			}
@@ -393,7 +550,7 @@ func (h *Host) launch(in launchInput) (model.Container, error) {
 	if err != nil {
 		return model.Container{}, fail("INVALID_URL", "%v", err)
 	}
-	c, token, err := h.reserveLaunch(in.ID)
+	c, token, effective, certReadiness, err := h.reserveLaunchWithEnvironment(in.ID)
 	if err != nil {
 		return model.Container{}, err
 	}
@@ -409,7 +566,35 @@ func (h *Host) launch(in launchInput) (model.Container, error) {
 		releaseReservation()
 		return model.Container{}, fail("INVALID_BROWSER_PATH", "%v", err)
 	}
-	args, err := browser.Arguments(profile, validatedURL)
+
+	proxyOpts := browser.ProxyOptions{Enabled: false}
+	var proxyWarning *model.ProxyLaunchWarning
+	directFallbackUsed := false
+	_ = certReadiness
+	if effective.EffectiveMode == "proxy" && effective.ProxyProfile != nil {
+		proxyProfile := effective.ProxyProfile
+		proxyOpts = browser.ProxyOptions{Enabled: true, Protocol: proxyProfile.Protocol, Host: proxyProfile.Host, Port: proxyProfile.Port, BypassRules: proxyProfile.BypassRules}
+		if proxyProfile.HealthCheck.Enabled {
+			listener := h.checkProxyListener(proxyProfile.Host, proxyProfile.Port, durationFromTimeout(proxyProfile.HealthCheck.TimeoutMs))
+			if !listener.Reachable {
+				switch proxyProfile.UnavailableBehavior {
+				case "warn":
+					proxyWarning = &model.ProxyLaunchWarning{Code: "PROXY_LISTENER_UNAVAILABLE", Message: "proxy listener is unavailable; launching with the configured proxy and no direct fallback", Host: proxyProfile.Host, Port: proxyProfile.Port}
+				case "block":
+					releaseReservation()
+					return model.Container{}, fail("PROXY_LISTENER_UNAVAILABLE", "proxy listener %s:%d is unavailable (%s)", proxyProfile.Host, proxyProfile.Port, listener.ErrorCode)
+				case "direct":
+					proxyOpts = browser.ProxyOptions{Enabled: false}
+					directFallbackUsed = true
+				default:
+					releaseReservation()
+					return model.Container{}, fail("INVALID_PROXY_PROFILE", "proxy unavailable behavior is invalid")
+				}
+			}
+		}
+	}
+
+	args, err := browser.Arguments(profile, validatedURL, proxyOpts)
 	if err != nil {
 		releaseReservation()
 		return model.Container{}, fail("INVALID_URL", "%v", err)
@@ -455,22 +640,31 @@ func (h *Host) launch(in launchInput) (model.Container, error) {
 		return model.Container{}, err
 	}
 	go h.watcher(c.ID, process)
+	launched.ProxyWarning = proxyWarning
+	launched.DirectFallbackUsed = directFallbackUsed
 	return launched, nil
 }
 
 func (h *Host) reserveLaunch(id string) (model.Container, string, error) {
+	container, token, _, _, err := h.reserveLaunchWithEnvironment(id)
+	return container, token, err
+}
+
+func (h *Host) reserveLaunchWithEnvironment(id string) (model.Container, string, effectiveEnvironment, []certificateReadiness, error) {
 	h.mu.Lock()
 	ownedProcess := h.processes[id]
 	h.mu.Unlock()
 	if ownedProcess != nil && ownedProcess.Running() {
-		return model.Container{}, "", fail("ALREADY_RUNNING", "container is already running")
+		return model.Container{}, "", effectiveEnvironment{}, nil, fail("ALREADY_RUNNING", "container is already running")
 	}
 	token, err := security.NewID()
 	if err != nil {
-		return model.Container{}, "", err
+		return model.Container{}, "", effectiveEnvironment{}, nil, err
 	}
 	now := h.now()
 	var reserved model.Container
+	var effective effectiveEnvironment
+	var certs []certificateReadiness
 	err = h.store.Update(func(db *model.Database) error {
 		for i := range db.Containers {
 			container := &db.Containers[i]
@@ -486,6 +680,14 @@ func (h *Host) reserveLaunch(id string) (model.Container, string, error) {
 					return fail("ALREADY_LAUNCHING", "container launch is already in progress")
 				}
 				setStopped(container, now)
+			}
+			resolved, err := resolveEffectiveEnvironment(db, *container)
+			if err != nil {
+				return err
+			}
+			readyCerts, err := h.certificateReadiness(db, resolved.RequiredCertificateIDs)
+			if err != nil {
+				return err
 			}
 			wasRunning := container.State == model.StateRunning || container.Running
 			inUse, err := h.store.ProfileInUse(container.ID)
@@ -509,11 +711,13 @@ func (h *Host) reserveLaunch(id string) (model.Container, string, error) {
 			container.UpdatedAt = now
 			container.PendingCleanup = false
 			reserved = *container
+			effective = resolved
+			certs = readyCerts
 			return nil
 		}
 		return fail("NOT_FOUND", "container was not found")
 	})
-	return reserved, token, err
+	return reserved, token, effective, certs, err
 }
 
 func (h *Host) releaseLaunchReservation(id, token string) error {

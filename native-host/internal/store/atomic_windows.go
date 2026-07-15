@@ -29,3 +29,5 @@ func atomicReplace(source, destination string) error {
 	}
 	return nil
 }
+
+func syncParent(string) error { return nil }

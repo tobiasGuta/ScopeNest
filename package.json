@@ -7,7 +7,7 @@
   "scripts": {
     "build": "npm run assets && npm run check",
     "assets": "node tools/generate-icons.mjs",
-    "check": "node --check extension/src/background.js && node --check extension/src/ui/app.js",
+    "check": "node tools/check-js.mjs",
     "smoke:native": "node tools/native-smoke.mjs bin/scopenest-host.exe",
     "test": "node --test extension/tests/*.test.js"
   },
