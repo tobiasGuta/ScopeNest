@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/scopenest/scopenest/native-host/internal/model"
 	"github.com/scopenest/scopenest/native-host/internal/security"
@@ -22,6 +24,7 @@ import (
 const MaxCertificateSize = 128 * 1024
 
 var (
+	ErrInvalidDisplayName  = errors.New("invalid certificate display name")
 	ErrInvalidBase64       = errors.New("invalid base64 encoding")
 	ErrTooLarge            = errors.New("certificate exceeds size limit")
 	ErrNoCertificate       = errors.New("no certificate found")
@@ -76,6 +79,15 @@ type ResourceIssue struct {
 }
 
 func (m *Manager) Import(displayName string, base64Content string, expectedSize int) (*StagedCertificate, error) {
+	displayName = strings.TrimSpace(displayName)
+	if !utf8.ValidString(displayName) || displayName == "" || utf8.RuneCountInString(displayName) > 80 {
+		return nil, ErrInvalidDisplayName
+	}
+	for _, character := range displayName {
+		if unicode.IsControl(character) {
+			return nil, ErrInvalidDisplayName
+		}
+	}
 	if expectedSize < 0 || expectedSize > MaxCertificateSize {
 		return nil, ErrTooLarge
 	}
@@ -131,7 +143,7 @@ func (m *Manager) Import(displayName string, base64Content string, expectedSize 
 	now := time.Now().UTC()
 	modelCert := model.Certificate{
 		ID:                     id,
-		DisplayName:            strings.TrimSpace(displayName),
+		DisplayName:            displayName,
 		SHA256Fingerprint:      fingerprintStr,
 		Subject:                cert.Subject.String(),
 		Issuer:                 cert.Issuer.String(),

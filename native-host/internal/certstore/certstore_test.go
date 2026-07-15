@@ -158,6 +158,35 @@ func TestManager_Import_Valid(t *testing.T) {
 	}
 }
 
+func TestCertificateImportValidatesDisplayName(t *testing.T) {
+	manager, _ := testManager(t)
+	caDER, _ := generateTestCert(t, true)
+	encoded := base64.StdEncoding.EncodeToString(caDER)
+
+	staged, err := manager.Import("  根证书  ", encoded, len(caDER))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.Model.DisplayName != "根证书" {
+		t.Fatalf("display name was not trimmed and preserved: %q", staged.Model.DisplayName)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "empty", value: " \t "},
+		{name: "too-long", value: strings.Repeat("界", 81)},
+		{name: "control", value: "bad\x00name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := manager.Import(tc.value, encoded, len(caDER)); !errors.Is(err, ErrInvalidDisplayName) {
+				t.Fatalf("invalid display name %q returned %v", tc.value, err)
+			}
+		})
+	}
+}
+
 func TestManager_Import_NotCA(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "metadata.json")

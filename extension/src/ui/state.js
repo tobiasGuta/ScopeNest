@@ -44,8 +44,22 @@ export function certificateActionView(certificate, host) {
       disabled: false,
     };
   }
+  if (state === "trusted" && certificate?.installedByScopeNest !== true) {
+    return {
+      kind: "external",
+      label: "Trusted externally",
+      description: "ScopeNest did not install this certificate and cannot remove its Windows trust. You may remove it from the ScopeNest library.",
+      disabled: true,
+    };
+  }
   if (state === "trusted") return { kind: "remove", label: "Remove Trust", disabled: false };
   return { kind: "install", label: "Install Trust", disabled: false };
+}
+
+export function certificateDeletionMessage(result) {
+  return result?.windowsTrustUnchanged === true
+    ? "Certificate removed from ScopeNest. Windows trust was unchanged."
+    : "Certificate deleted.";
 }
 
 export function dialogClosedState() {

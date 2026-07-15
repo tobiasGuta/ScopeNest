@@ -1,6 +1,6 @@
 import { request, toast } from "./api.js";
 import { button, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
-import { certificateActionView, certificateTrustView } from "./state.js";
+import { certificateActionView, certificateDeletionMessage, certificateTrustView } from "./state.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -32,10 +32,15 @@ export function initCertificates(state, refreshApp) {
 
     const actions = document.createElement("div"); actions.className = "card-actions";
     const actionView = certificateActionView(cert, state.host);
-    if (actionView.kind === "status") {
+    if (actionView.kind === "status" || actionView.kind === "external") {
       const message = document.createElement("p"); message.className = "meta";
       message.textContent = actionView.label;
       actions.append(message);
+      if (actionView.description) {
+        const description = document.createElement("p"); description.className = "meta";
+        description.textContent = actionView.description;
+        actions.append(description);
+      }
     } else if (actionView.kind === "manual" || actionView.kind === "acknowledge") {
       const message = document.createElement("p"); message.className = "meta";
       message.textContent = actionView.label;
@@ -67,7 +72,11 @@ export function initCertificates(state, refreshApp) {
   function buildMenu(menu, cert) {
     if (!cert) return;
     menu.append(button("Delete", "delete", () => confirmDelete("Delete certificate?", `This removes ${cert.displayName} from ScopeNest.`, async () => {
-      try { await request("delete_certificate", { id: cert.id }); toast("Certificate deleted."); await refreshApp(); }
+      try {
+        const result = await request("delete_certificate", { id: cert.id });
+        toast(certificateDeletionMessage(result));
+        await refreshApp();
+      }
       catch (error) { toast(error.message, true); }
     })));
   }

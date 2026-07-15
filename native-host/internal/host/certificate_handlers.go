@@ -61,6 +61,8 @@ func (h *Host) importCertificate(raw json.RawMessage) (model.Certificate, error)
 	if err != nil {
 		code := "INVALID_CERTIFICATE"
 		switch {
+		case errors.Is(err, certstore.ErrInvalidDisplayName):
+			code = "INVALID_CERTIFICATE_NAME"
 		case errors.Is(err, certstore.ErrTooLarge):
 			code = "CERTIFICATE_TOO_LARGE"
 		case errors.Is(err, certstore.ErrMultipleCerts):
@@ -461,7 +463,7 @@ func validateCertificateDeletionInDBExcept(db model.Database, id, allowedOperati
 		if op.OperationID == allowedOperationID {
 			continue
 		}
-		if op.CertificateID == id && op.State == "deleting" {
+		if op.CertificateID == id {
 			return model.Certificate{}, fail("CERTIFICATE_DELETE_OPERATION_PENDING", "certificate deletion operation is pending")
 		}
 	}
@@ -514,6 +516,7 @@ func (h *Host) reconcileTrustOperations() error {
 				} else {
 					certificate.Trusted = false
 					certificate.TrustState = model.CertificateTrustUntrusted
+					certificate.InstalledByScopeNest = false
 					clearTrustOperation(certificate)
 				}
 			case model.CertificateTrustRemoving:
@@ -556,15 +559,23 @@ func (h *Host) reconcileCertificateDeletions() error {
 	if err != nil {
 		return err
 	}
+	var reconciliationErr error
 	for _, op := range db.CertificateDeletionOps {
-		if op.State != "deleting" {
+		switch op.State {
+		case "deleting", "deletion_error":
+		default:
 			continue
 		}
 		if err := h.reconcileCertificateDeletion(op); err != nil {
-			return err
+			// One failed tombstone must not prevent recovery of later operations.
+			if recordErr := h.markCertificateDeletionError(op.OperationID, err.Error()); recordErr != nil {
+				err = errors.Join(err, recordErr)
+			}
+			reconciliationErr = errors.Join(reconciliationErr, err)
+			continue
 		}
 	}
-	return nil
+	return reconciliationErr
 }
 
 func (h *Host) reconcileCertificateDeletion(op model.CertificateDeletionOperation) error {

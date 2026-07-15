@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildProxyProfilePayload, DEFAULT_PROXY_VALUES } from "../src/ui/proxies.js";
-import { certificateActionView, dialogClosedState } from "../src/ui/state.js";
+import { certificateActionView, certificateDeletionMessage, dialogClosedState } from "../src/ui/state.js";
 
 test("builds proxy payload with native-required defaults", () => {
   assert.deepEqual(buildProxyProfilePayload({ name: "Local" }), {
@@ -44,11 +44,22 @@ test("renders Linux capability certificate actions without Windows install butto
 });
 
 test("renders Windows and pending certificate trust states", () => {
-  assert.deepEqual(certificateActionView({ trustState: "trusted" }, { capabilities: { trustInstallation: true } }), { kind: "remove", label: "Remove Trust", disabled: false });
+	assert.deepEqual(certificateActionView({ trustState: "trusted", installedByScopeNest: true }, { capabilities: { trustInstallation: true } }), { kind: "remove", label: "Remove Trust", disabled: false });
+	assert.deepEqual(certificateActionView({ trustState: "trusted", installedByScopeNest: false }, { capabilities: { trustInstallation: true } }), {
+		kind: "external",
+		label: "Trusted externally",
+		description: "ScopeNest did not install this certificate and cannot remove its Windows trust. You may remove it from the ScopeNest library.",
+		disabled: true,
+	});
   assert.deepEqual(certificateActionView({ trustState: "untrusted" }, { capabilities: { trustInstallation: true } }), { kind: "install", label: "Install Trust", disabled: false });
   assert.deepEqual(certificateActionView({ trustState: "installing" }, { capabilities: { trustInstallation: true } }), { kind: "status", label: "Installing...", disabled: true });
   assert.deepEqual(certificateActionView({ trustState: "removing" }, { capabilities: { trustInstallation: true } }), { kind: "status", label: "Removing...", disabled: true });
   assert.deepEqual(certificateActionView({ trustState: "trust_error" }, { capabilities: { trustInstallation: true } }), { kind: "status", label: "Recovery required", disabled: true });
+});
+
+test("reports when library deletion leaves external Windows trust unchanged", () => {
+	assert.equal(certificateDeletionMessage({ windowsTrustUnchanged: true }), "Certificate removed from ScopeNest. Windows trust was unchanged.");
+	assert.equal(certificateDeletionMessage({ windowsTrustUnchanged: false }), "Certificate deleted.");
 });
 
 test("exposes dialog close reset state for DOM binding tests", () => {

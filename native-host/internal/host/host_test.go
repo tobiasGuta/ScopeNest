@@ -1694,6 +1694,121 @@ func TestCertificateDeletionTombstoneFinishesWhenMetadataAbsent(t *testing.T) {
 	}
 }
 
+func TestCertificateDeletionErrorIsRetriedOnStartup(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	source := filepath.Join(certRoot, certificate.ID)
+	staged := filepath.Join(certRoot, ".delete-"+certificate.ID+"-retry")
+	if err := os.Rename(source, staged); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{
+			CertificateID: certificate.ID, OperationID: "retry", SourceDirectory: source,
+			StagedDirectory: staged, State: "deletion_error", Error: "temporary failure", CreatedAt: now, UpdatedAt: now,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.startupCleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "certificate.der")); err != nil {
+		t.Fatalf("startup did not restore the certificate directory: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 0 {
+		t.Fatalf("retried deletion tombstone remains: %#v", db.CertificateDeletionOps)
+	}
+}
+
+func TestCertificateDeletionErrorBlocksSecondDeletion(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	now := time.Now().UTC()
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps, model.CertificateDeletionOperation{
+			CertificateID: certificate.ID, OperationID: "unresolved", SourceDirectory: filepath.Join(certRoot, certificate.ID),
+			StagedDirectory: filepath.Join(certRoot, ".delete-unresolved"), State: "deletion_error", Error: "temporary failure", CreatedAt: now, UpdatedAt: now,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deleteCertificate(certificate.ID); ErrorCode(err) != "CERTIFICATE_DELETE_OPERATION_PENDING" {
+		t.Fatalf("second deletion was not blocked: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 1 {
+		t.Fatalf("second deletion operation was created: %#v", db.CertificateDeletionOps)
+	}
+}
+
+func TestReconciliationContinuesAfterOneDeletionError(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &ownershipTrustStore{}
+	_, first := importHostTestCertificate(t, st, trust)
+	h, second := importHostTestCertificate(t, st, trust)
+	certRoot := filepath.Join(st.Root(), "resources", "certificates")
+	secondSource := filepath.Join(certRoot, second.ID)
+	secondStaged := filepath.Join(certRoot, ".delete-"+second.ID+"-continue")
+	if err := os.Rename(secondSource, secondStaged); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-time.Hour)
+	if err := st.Update(func(db *model.Database) error {
+		db.CertificateDeletionOps = append(db.CertificateDeletionOps,
+			model.CertificateDeletionOperation{CertificateID: first.ID, OperationID: "broken", SourceDirectory: filepath.Join(t.TempDir(), "outside"), StagedDirectory: filepath.Join(certRoot, ".delete-broken"), State: "deletion_error", Error: "old error", CreatedAt: old, UpdatedAt: old},
+			model.CertificateDeletionOperation{CertificateID: second.ID, OperationID: "recoverable", SourceDirectory: secondSource, StagedDirectory: secondStaged, State: "deleting", CreatedAt: old, UpdatedAt: old},
+		)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileCertificateDeletions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(secondSource, "certificate.der")); err != nil {
+		t.Fatalf("later deletion operation was not reconciled: %v", err)
+	}
+	db, _ := st.Load()
+	if len(db.CertificateDeletionOps) != 1 || db.CertificateDeletionOps[0].OperationID != "broken" || db.CertificateDeletionOps[0].Error == "old error" || !db.CertificateDeletionOps[0].UpdatedAt.After(old) {
+		t.Fatalf("reconciliation did not process both operations: %#v", db.CertificateDeletionOps)
+	}
+}
+
+func TestInterruptedInstallingOperationClearsOwnershipWhenTrustStoreWasNotMutated(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	trust := &faultTrustStore{installed: false}
+	h, certificate := importHostTestCertificate(t, st, trust)
+	if err := st.Update(func(db *model.Database) error {
+		managed := &db.Certificates[0]
+		managed.Trusted = false
+		managed.TrustState = model.CertificateTrustInstalling
+		managed.InstalledByScopeNest = true
+		managed.TrustOperationID = "interrupted-install"
+		managed.TrustOperationFingerprint = managed.SHA256Fingerprint
+		managed.TrustOperationWasTrusted = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileTrustOperations(); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := st.Load()
+	managed := db.Certificates[0]
+	if managed.ID != certificate.ID || managed.Trusted || managed.TrustState != model.CertificateTrustUntrusted || managed.InstalledByScopeNest || managed.TrustOperationID != "" {
+		t.Fatalf("absent failed installation retained false ownership: %#v", managed)
+	}
+}
+
 func TestTrustErrorReconciliationRecoversInstallThatActuallyInstalled(t *testing.T) {
 	st, _ := store.New(t.TempDir())
 	trust := &faultTrustStore{installErr: errors.New("after install"), installMutate: true}
