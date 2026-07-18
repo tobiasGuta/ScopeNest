@@ -27,7 +27,7 @@ try {
 			if (Test-Path -LiteralPath $installedGo) { $goPath = $installedGo }
 		}
 		if (-not $goPath) {
-            throw 'Go 1.22 or newer was not found. Install Go, or pass -BinaryPath to a prebuilt scopenest-host.exe.'
+            throw 'Go 1.25 or newer was not found. Install Go, or pass -BinaryPath to a prebuilt scopenest-host.exe.'
         }
         $sourceDir = Join-Path $RepoRoot 'native-host'
         Push-Location $sourceDir

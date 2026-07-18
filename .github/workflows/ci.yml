@@ -44,7 +44,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           $allErrors = @()
-          foreach ($path in @('scripts/install-windows.ps1', 'scripts/uninstall-windows.ps1')) {
+          foreach ($path in @('scripts/install-windows.ps1', 'scripts/uninstall-windows.ps1', 'scripts/install-mcp-windows.ps1', 'scripts/uninstall-mcp-windows.ps1')) {
             $tokens = $null
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -55,5 +55,6 @@ jobs:
       - run: go test -count=1 ./...
       - if: runner.os == 'Linux'
         run: go test -race -count=1 ./...
-      - run: go test -count=5 ./cmd/scopenest-host ./internal/browser ./internal/host ./internal/store
+      - run: go test -count=5 ./cmd/scopenest-host ./cmd/scopenest-mcp ./internal/browser ./internal/host ./internal/mcpserver ./internal/store
       - run: go build -buildvcs=false -trimpath ./cmd/scopenest-host
+      - run: go build -buildvcs=false -trimpath ./cmd/scopenest-mcp

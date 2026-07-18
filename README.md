@@ -30,6 +30,7 @@ No shell is involved. The Go host passes every argument separately to the operat
 - Detect Chrome, Chromium, Edge, and Brave on Windows and Linux, with a custom executable option.
 - Keep preferences in `chrome.storage.local` and authoritative container metadata in the local host.
 - Operate with no analytics, advertising, telemetry, external service, or page-content access.
+- Offer a separate provider-neutral local `stdio` MCP server for a deliberately limited set of container operations.
 
 ## Architecture
 
@@ -72,7 +73,7 @@ tools/                     deterministic icon generator
 ## Requirements
 
 - Chrome, Chromium, Microsoft Edge, or Brave.
-- Go 1.22 or newer to build the native companion.
+- Go 1.25 or newer to build the native companion and MCP server.
 - Node.js 20 or newer to run extension checks/tests and regenerate icons. The extension itself has no npm runtime dependencies.
 
 ## Build
@@ -84,6 +85,7 @@ npm.cmd run build
 Set-Location native-host
 go test ./...
 go build -buildvcs=false -trimpath -o ..\bin\scopenest-host.exe .\cmd\scopenest-host
+go build -buildvcs=false -trimpath -o ..\bin\scopenest-mcp.exe .\cmd\scopenest-mcp
 ```
 
 On Linux:
@@ -93,9 +95,16 @@ npm run build
 (cd native-host && go test ./...)
 mkdir -p bin
 (cd native-host && go build -buildvcs=false -trimpath -o ../bin/scopenest-host ./cmd/scopenest-host)
+(cd native-host && go build -buildvcs=false -trimpath -o ../bin/scopenest-mcp ./cmd/scopenest-mcp)
 ```
 
 `npm run assets` deterministically creates the four PNG icons from the original nested-compartment design. No CDN or downloaded asset is used.
+
+## MCP integration
+
+`scopenest-mcp` is an optional, separate local process for Codex Desktop and other standards-compliant MCP clients. It uses MCP over stdin/stdout only and delegates every operation to the same `host.Host` validation, store, browser, certificate, locking, reservation, and process-ownership implementation used by the extension. It exposes no page-content, cookie, arbitrary-command, trust-changing, deletion, proxy-mutation, or template-mutation tool.
+
+See [docs/MCP.md](docs/MCP.md) for the exact tools, build/install commands, Codex registration, privacy guarantees, and separate-process ownership limitations.
 
 ## Install for development
 

@@ -18,6 +18,8 @@ The Chrome extension is an authorized client, not a trusted source of input. The
 
 GitHub Actions dependencies are pinned to immutable full commit SHAs. Dependabot checks the `github-actions` ecosystem weekly so action upgrades arrive as explicit, reviewable pull requests instead of mutable tag changes.
 
+The optional `scopenest-mcp` executable is a separate local stdio process. It exposes only dedicated allowlisted tools, strictly rejects unknown arguments, redacts filesystem/process/certificate internals, and delegates all mutations to the existing `host.Host`. It does not expose deletion, certificate trust changes, proxy/template mutations, arbitrary commands, or page access. Process ownership remains isolated between each native-host or MCP process; persisted PIDs are never termination authority. See [docs/MCP.md](docs/MCP.md).
+
 ## Native-host protections
 
 - Standard input/output Native Messaging only; no HTTP server, remote listener, telemetry, or updater.

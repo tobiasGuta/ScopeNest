@@ -350,6 +350,9 @@ func (h *Host) dispatch(req protocol.Request) (any, error) {
 }
 
 func (h *Host) status() (any, error) {
+	if err := h.reconcile(); err != nil {
+		return nil, err
+	}
 	db, err := h.store.Load()
 	if err != nil {
 		return nil, err
@@ -361,16 +364,34 @@ func (h *Host) status() (any, error) {
 	if h.certManager != nil && h.certManager.Trust.Supported() {
 		caps["trustInstallation"] = true
 	}
+	savedCount, temporaryCount, runningCount, pendingCleanupCount := 0, 0, 0, 0
+	for _, container := range db.Containers {
+		if container.Temporary {
+			temporaryCount++
+		} else {
+			savedCount++
+		}
+		if container.State == model.StateRunning {
+			runningCount++
+		}
+		if container.PendingCleanup {
+			pendingCleanupCount++
+		}
+	}
 	result := map[string]any{
-		"hostVersion":      HostVersion,
-		"protocolVersion":  protocol.Version,
-		"dataDirectory":    h.store.Root(),
-		"containerCount":   len(db.Containers),
-		"detectedBrowsers": browser.Detect(),
-		"startupCleanup":   h.startupCleanupStatus(),
-		"capabilities":     caps,
-		"platform":         h.platform,
-		"brokenReferences": store.BrokenReferences(db),
+		"hostVersion":             HostVersion,
+		"protocolVersion":         protocol.Version,
+		"dataDirectory":           h.store.Root(),
+		"containerCount":          len(db.Containers),
+		"savedContainerCount":     savedCount,
+		"temporaryContainerCount": temporaryCount,
+		"runningContainerCount":   runningCount,
+		"pendingCleanupCount":     pendingCleanupCount,
+		"detectedBrowsers":        browser.Detect(),
+		"startupCleanup":          h.startupCleanupStatus(),
+		"capabilities":            caps,
+		"platform":                h.platform,
+		"brokenReferences":        store.BrokenReferences(db),
 	}
 	if h.certManager != nil {
 		if issues, auditErr := h.certManager.AuditResources(); auditErr == nil {
@@ -460,17 +481,25 @@ func validateContainerInput(in containerInput) (containerInput, error) {
 	if err := security.ValidateBrowserType(in.BrowserType); err != nil {
 		return in, fail("INVALID_BROWSER", "%v", err)
 	}
+	if strings.TrimSpace(in.BrowserExecutable) == "" && in.BrowserType != "custom" {
+		for _, candidate := range browser.Detect() {
+			if candidate.Type == in.BrowserType {
+				in.BrowserExecutable = candidate.Path
+				break
+			}
+		}
+	}
 	path, err := security.ValidateBrowserExecutable(in.BrowserExecutable, in.BrowserType)
 	if err != nil {
 		return in, fail("INVALID_BROWSER_PATH", "%v", err)
 	}
 	in.BrowserExecutable = path
 
-	if in.NetworkMode != "" && in.NetworkMode != "direct" && in.NetworkMode != "template" && in.NetworkMode != "proxy" {
-		return in, fail("INVALID_NETWORK_MODE", "network mode must be direct, template, or proxy")
-	}
 	if in.NetworkMode == "" {
 		in.NetworkMode = "direct"
+	}
+	if err := security.ValidateNetworkMode(in.NetworkMode); err != nil {
+		return in, fail("INVALID_NETWORK_MODE", "%v", err)
 	}
 	if in.ProxyProfileID != "" {
 		if err := security.ValidateID(in.ProxyProfileID); err != nil {
