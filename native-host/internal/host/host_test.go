@@ -28,7 +28,7 @@ import (
 
 type failingLauncher struct{ err error }
 
-func (f failingLauncher) Start(_ string, _ []string) (browser.Process, error) {
+func (f failingLauncher) Start(_ browser.LaunchSpec) (browser.Process, error) {
 	return nil, f.err
 }
 
@@ -108,7 +108,7 @@ type queuedLauncher struct {
 	calls     int
 }
 
-func (l *queuedLauncher) Start(_ string, _ []string) (browser.Process, error) {
+func (l *queuedLauncher) Start(_ browser.LaunchSpec) (browser.Process, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
@@ -133,7 +133,7 @@ type gatedLauncher struct {
 	once    sync.Once
 }
 
-func (l *gatedLauncher) Start(_ string, _ []string) (browser.Process, error) {
+func (l *gatedLauncher) Start(_ browser.LaunchSpec) (browser.Process, error) {
 	l.once.Do(func() { close(l.started) })
 	<-l.release
 	return l.process, nil
@@ -959,6 +959,83 @@ func TestLaunchReservationBlocksAnotherHost(t *testing.T) {
 	}
 }
 
+func TestLaunchForMCPUsesCurrentContainerRecordInReservationTransaction(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*model.Container)
+		wantCode string
+	}{
+		{
+			name: "name changed after list",
+			mutate: func(container *model.Container) {
+				container.Name = "Changed by extension"
+			},
+			wantCode: "CONTAINER_NAME_MISMATCH",
+		},
+		{
+			name: "browser changed to custom after list",
+			mutate: func(container *model.Container) {
+				container.BrowserType = "custom"
+			},
+			wantCode: "CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h, st, executable := testHost(t)
+			launcher := &queuedLauncher{}
+			h.launcher = launcher
+			created := h.Handle(request(t, "create_container", containerInput{Name: "Listed name", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable}))
+			if !created.Success {
+				t.Fatalf("create failed: %#v", created)
+			}
+			container := created.Data.(model.Container)
+
+			listed := h.Handle(protocol.Request{Version: protocol.Version, RequestID: "before-update", Command: "list_containers"})
+			if !listed.Success {
+				t.Fatalf("list failed: %#v", listed)
+			}
+			before := listed.Data.([]model.Container)
+			if len(before) != 1 || before[0].Name != container.Name || before[0].BrowserType != "chrome" {
+				t.Fatalf("unexpected earlier list result: %#v", before)
+			}
+
+			extensionStore, err := store.New(st.Root())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := extensionStore.Update(func(db *model.Database) error {
+				for i := range db.Containers {
+					if db.Containers[i].ID == container.ID {
+						test.mutate(&db.Containers[i])
+						return nil
+					}
+				}
+				return errors.New("container missing from extension update")
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			response := h.LaunchForMCP(container.ID, container.Name, "https://example.com")
+			if response.Success || response.ErrorCode != test.wantCode {
+				t.Fatalf("restricted launch response = %#v", response)
+			}
+			if launcher.CallCount() != 0 {
+				t.Fatalf("browser launcher called %d times", launcher.CallCount())
+			}
+			db, err := st.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := db.Containers[0]
+			if current.State != model.StateStopped || current.LaunchToken != "" || current.LaunchReservedAt != nil {
+				t.Fatalf("rejected MCP launch created a reservation: %#v", current)
+			}
+		})
+	}
+}
+
 func TestConcurrentLaunchReservationsHaveSingleWinner(t *testing.T) {
 	h1, st, executable := testHost(t)
 	created := h1.Handle(request(t, "create_container", containerInput{Name: "Concurrent", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))
@@ -1147,15 +1224,18 @@ func TestLaunchFailureReleasesReservation(t *testing.T) {
 type recordingLauncher struct {
 	mu      sync.Mutex
 	args    []string
+	spec    browser.LaunchSpec
 	calls   int
 	process browser.Process
 }
 
-func (l *recordingLauncher) Start(_ string, args []string) (browser.Process, error) {
+func (l *recordingLauncher) Start(spec browser.LaunchSpec) (browser.Process, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
-	l.args = append([]string(nil), args...)
+	l.args = append([]string(nil), spec.Arguments...)
+	l.spec = spec
+	l.spec.Arguments = append([]string(nil), spec.Arguments...)
 	return l.process, nil
 }
 
@@ -1163,6 +1243,14 @@ func (l *recordingLauncher) snapshot() (int, []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.calls, append([]string(nil), l.args...)
+}
+
+func (l *recordingLauncher) snapshotSpec() browser.LaunchSpec {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	result := l.spec
+	result.Arguments = append([]string(nil), l.spec.Arguments...)
+	return result
 }
 
 func proxyLaunchHost(t *testing.T, behavior string) (*Host, *store.Store, *recordingLauncher, string, *int) {
@@ -1225,6 +1313,35 @@ func TestProxyUnavailableWarnChecksListenerWarnsAndLaunchesWithProxyNoDirectFall
 	}
 	if !containsArgument(args, "--proxy-server=") || !containsArgument(args, "--disable-quic") {
 		t.Fatalf("proxy arguments missing: %v", args)
+	}
+}
+
+func TestLaunchUsesVisualIdentityFromCurrentReservedContainerRecord(t *testing.T) {
+	h, st, launcher, id, _ := proxyLaunchHost(t, "warn")
+	if err := st.Update(func(db *model.Database) error {
+		for index := range db.Containers {
+			if db.Containers[index].ID == id {
+				db.Containers[index].Name = "Current identity"
+				db.Containers[index].Color = "#123456"
+				db.Containers[index].Icon = "🔬"
+				return nil
+			}
+		}
+		return errors.New("test container not found")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.launch(launchInput{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	spec := launcher.snapshotSpec()
+	wantIdentity := browser.VisualIdentity{Name: "Current identity", Color: "#123456", Icon: "🔬"}
+	if spec.Identity != wantIdentity {
+		t.Fatalf("launch identity = %#v, want current reserved record %#v", spec.Identity, wantIdentity)
+	}
+	if !containsExactArgument(spec.Arguments, "--window-name=[🔬] ScopeNest — Current identity") {
+		t.Fatalf("current identity window-name argument is missing: %#v", spec.Arguments)
 	}
 }
 

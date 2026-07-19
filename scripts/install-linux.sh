@@ -29,7 +29,7 @@ if [[ -n "$BINARY_PATH" ]]; then
   [[ -f "$SOURCE_BINARY" ]] || { echo "Native host binary not found: $SOURCE_BINARY" >&2; exit 1; }
   install -m 700 "$SOURCE_BINARY" "$INSTALLED_BINARY"
 else
-  command -v go >/dev/null 2>&1 || { echo "Go 1.22+ is required, or pass a prebuilt binary as the second argument." >&2; exit 1; }
+  command -v go >/dev/null 2>&1 || { echo "Go 1.25+ is required, or pass a prebuilt binary as the second argument." >&2; exit 1; }
   (cd "$REPO_ROOT/native-host" && go build -buildvcs=false -trimpath -ldflags='-s -w' -o "$INSTALLED_BINARY" ./cmd/scopenest-host)
   chmod 700 "$INSTALLED_BINARY"
 fi

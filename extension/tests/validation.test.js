@@ -1,11 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { containerCommandData, sortContainers, validateContainer, validateWebURL } from "../src/shared/validation.js";
+import { containerCommandData, MAX_WINDOW_LABEL_RUNES, sortContainers, validateContainer, validateWebURL, visualIdentityLabel } from "../src/shared/validation.js";
 
 const valid = { name: "Target — User A", color: "#725cff", icon: "🔐", browserType: "chrome", browserExecutable: "/opt/google/chrome" };
 
 test("normalizes a valid container", () => {
   assert.equal(validateContainer({ ...valid, name: "  Target — User A  " }).name, valid.name);
+});
+
+test("builds a safe visual identity label for the browser preview", () => {
+  assert.equal(visualIdentityLabel({ name: "Research", icon: "🔬" }), "[🔬] ScopeNest — Research");
+  assert.equal(visualIdentityLabel({ name: " Work " }), "ScopeNest — Work");
+  assert.equal(visualIdentityLabel(), "ScopeNest");
+  assert.equal(visualIdentityLabel({ name: "red\tteam\u2028window", icon: " 🧪 " }), "[🧪] ScopeNest — red team window");
+});
+
+test("bounds the visual identity label without splitting Unicode code points", () => {
+  const label = visualIdentityLabel({ name: "界".repeat(200), icon: "🧪" });
+  assert.equal([...label].length, MAX_WINDOW_LABEL_RUNES);
+  assert.equal(label.includes("�"), false);
+});
+
+test("rejects bidi formatting controls while preserving ZWJ emoji", () => {
+  for (const value of ["Admin\u202Eresu", "User\u2066Admin\u2069", "\u200FAnonymous"]) {
+    assert.throws(() => validateContainer({ ...valid, name: value }), /bidirectional/);
+  }
+  for (const value of ["A\u202E", "\u2066A\u2069", "\u200F"]) {
+    assert.throws(() => validateContainer({ ...valid, icon: value }), /bidirectional/);
+  }
+  assert.equal(validateContainer({ ...valid, icon: "👩‍💻" }).icon, "👩‍💻");
+});
+
+test("defensively removes bidi formatting controls from preview labels", () => {
+  assert.equal(visualIdentityLabel({ name: "Admin\u202Eresu" }), "ScopeNest — Adminresu");
+  assert.equal(visualIdentityLabel({ name: "User\u2066Admin\u2069" }), "ScopeNest — UserAdmin");
+  assert.equal(visualIdentityLabel({ name: "\u200FAnonymous" }), "ScopeNest — Anonymous");
 });
 
 test("rejects invalid names, colors, icons, browsers, and paths", () => {

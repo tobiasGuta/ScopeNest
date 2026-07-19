@@ -22,7 +22,7 @@ type Candidate struct {
 }
 
 type Launcher interface {
-	Start(executable string, args []string) (Process, error)
+	Start(spec LaunchSpec) (Process, error)
 }
 
 type ExecLauncher struct{}
@@ -34,6 +34,22 @@ type Process interface {
 	Terminate() error
 }
 
+// VisualIdentity is the non-sensitive, user-configured identity applied to the
+// browser's initial top-level window.
+type VisualIdentity struct {
+	Name  string
+	Color string
+	Icon  string
+}
+
+// LaunchSpec keeps the executable, arguments, and visual identity together so
+// every launch caller uses the same browser implementation.
+type LaunchSpec struct {
+	Executable string
+	Arguments  []string
+	Identity   VisualIdentity
+}
+
 type ProxyOptions struct {
 	Enabled     bool
 	Protocol    string
@@ -42,22 +58,38 @@ type ProxyOptions struct {
 	BypassRules []string
 }
 
-func Arguments(profilePath, rawURL string, proxy ProxyOptions) ([]string, error) {
-	if profilePath == "" || !filepath.IsAbs(profilePath) {
+type ArgumentOptions struct {
+	ProfilePath string
+	URL         string
+	Proxy       ProxyOptions
+	Identity    VisualIdentity
+}
+
+func Arguments(options ArgumentOptions) ([]string, error) {
+	if options.ProfilePath == "" || !filepath.IsAbs(options.ProfilePath) {
 		return nil, errors.New("profile path must be absolute")
 	}
-	args := []string{"--user-data-dir=" + profilePath, "--profile-directory=Default", "--new-window", "--no-first-run"}
+	if err := validateVisualIdentity(options.Identity); err != nil {
+		return nil, err
+	}
+	args := []string{
+		"--user-data-dir=" + options.ProfilePath,
+		"--profile-directory=Default",
+		"--new-window",
+		"--no-first-run",
+		"--window-name=" + WindowLabel(options.Identity),
+	}
 
-	if proxy.Enabled {
+	if options.Proxy.Enabled {
 		// e.g. --proxy-server="http=http://127.0.0.1:8080;https=http://127.0.0.1:8080"
 		// or socks5://127.0.0.1:1080
-		addr := net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port))
+		addr := net.JoinHostPort(options.Proxy.Host, strconv.Itoa(options.Proxy.Port))
 		var serverArg string
-		if proxy.Protocol == "socks4" || proxy.Protocol == "socks5" {
-			serverArg = fmt.Sprintf("%s://%s", proxy.Protocol, addr)
+		if options.Proxy.Protocol == "socks4" || options.Proxy.Protocol == "socks5" {
+			serverArg = fmt.Sprintf("%s://%s", options.Proxy.Protocol, addr)
 		} else {
 			scheme := "http"
-			if proxy.Protocol == "https" {
+			if options.Proxy.Protocol == "https" {
 				scheme = "https"
 			}
 			proxyURL := fmt.Sprintf("%s://%s", scheme, addr)
@@ -71,14 +103,14 @@ func Arguments(profilePath, rawURL string, proxy ProxyOptions) ([]string, error)
 		// do not support UDP/QUIC interception, so disable it when using a proxy.
 		args = append(args, "--disable-quic")
 
-		if len(proxy.BypassRules) > 0 {
+		if len(options.Proxy.BypassRules) > 0 {
 			// e.g. --proxy-bypass-list="*.local,192.168.1.1/24"
-			args = append(args, "--proxy-bypass-list="+strings.Join(proxy.BypassRules, ","))
+			args = append(args, "--proxy-bypass-list="+strings.Join(options.Proxy.BypassRules, ","))
 		}
 	}
 
-	if rawURL != "" {
-		validated, err := security.ValidateURL(rawURL)
+	if options.URL != "" {
+		validated, err := security.ValidateURL(options.URL)
 		if err != nil {
 			return nil, err
 		}

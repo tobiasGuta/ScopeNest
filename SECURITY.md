@@ -18,6 +18,8 @@ The Chrome extension is an authorized client, not a trusted source of input. The
 
 GitHub Actions dependencies are pinned to immutable full commit SHAs. Dependabot checks the `github-actions` ecosystem weekly so action upgrades arrive as explicit, reviewable pull requests instead of mutable tag changes.
 
+The optional `scopenest-mcp` executable is a separate local stdio process. It exposes only dedicated allowlisted tools, strictly rejects unknown arguments, redacts filesystem/process/certificate internals, and delegates all mutations to the existing `host.Host`. It does not expose deletion, certificate trust changes, proxy/template mutations, arbitrary commands, or page access. MCP-created containers use detected standard browsers only, and existing custom-browser containers require a human launch through the extension. For MCP launches, the expected container name and standard browser type are checked against the current record under the shared store lock in the same transaction that creates the launch reservation. Process ownership remains isolated between each native-host or MCP process; persisted PIDs are never termination authority. The MCP client may send sanitized arguments and results to its model provider; see [docs/MCP.md](docs/MCP.md) for that privacy boundary.
+
 ## Native-host protections
 
 - Standard input/output Native Messaging only; no HTTP server, remote listener, telemetry, or updater.
@@ -56,9 +58,11 @@ Anyone with access to the user's operating-system account may still read or modi
 - URLs are limited to absolute, credential-free `http` and `https` URLs up to 8192 bytes.
 - Browser arguments are fixed and passed separately through Go's `exec.Command`; no shell command is built or invoked.
 - Proxy arguments are built from validated loopback profiles only. ScopeNest never accepts arbitrary Chromium arguments, arbitrary startup commands, interception-tool launch commands, or `--ignore-certificate-errors`.
+- Container name/icon metadata is converted to one bounded, single-line `--window-name=<label>` argument. Existing native validation remains authoritative; dangerous Unicode bidirectional-formatting characters are rejected while emoji ZWJ sequences remain valid, and defensive label normalization removes bidi controls, control characters, and line separators. Embedded text cannot become a separate Chromium argument.
 - Effective networking is resolved under the metadata lock during launch reservation. Explicit `direct` launches direct, explicit container `proxy` overrides a template proxy, and `template` inherits the template proxy. Broken or disabled references are rejected; ScopeNest does not silently fall back to direct networking.
 - ScopeNest refuses duplicate launches while a recorded process is alive.
 - On Windows, the browser is created suspended, assigned to a private Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and resumed only after assignment succeeds. Closing uses that owned Job Object.
+- Windows visual styling is asynchronous and best effort. Candidate ownership comes only from `QueryInformationJobObject(JobObjectBasicProcessIdList)` on that exact private Job Object; ScopeNest then considers only visible, unowned top-level windows whose current PID is in that list. Persisted PIDs, process names, titles, and window classes are never styling authority. The poll stops after one eligible window attempt, process exit, or a ten-second timeout, and DWM failures do not affect launch or process lifetime.
 - On Linux, the browser is created in a dedicated process group. Closing signals only that owned group, first with `SIGTERM` and then with `SIGKILL` after a bounded grace period.
 - Process authority exists only in the current host's in-memory managed-process object. Persisted and reconciled PIDs are never reopened or killed, even if the numeric PID currently exists.
 - A persisted PID is never sufficient evidence that an unowned container is running. Reconciliation, relaunch, and deletion use Chromium profile-lock markers as the authoritative signal, preventing unrelated PID reuse from preserving stale state.

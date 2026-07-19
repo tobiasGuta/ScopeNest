@@ -14,10 +14,20 @@ import (
 	"unicode/utf8"
 )
 
+var supportedBrowserTypes = []string{"chrome", "chromium", "edge", "brave", "custom"}
+
+var supportedNetworkModes = []string{"direct", "proxy", "template"}
+
 var (
 	idPattern    = regexp.MustCompile(`^[a-f0-9]{32}$`)
 	colorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
-	browserTypes = map[string]bool{"chrome": true, "chromium": true, "edge": true, "brave": true, "custom": true}
+	browserTypes = func() map[string]bool {
+		result := make(map[string]bool, len(supportedBrowserTypes))
+		for _, browserType := range supportedBrowserTypes {
+			result[browserType] = true
+		}
+		return result
+	}()
 	browserNames = map[string]map[string]bool{
 		"chrome":   {"chrome": true, "google-chrome": true, "google-chrome-stable": true},
 		"chromium": {"chromium": true, "chromium-browser": true},
@@ -27,6 +37,10 @@ var (
 	}
 	errOutsideRoot = errors.New("path is outside the managed ScopeNest directory")
 )
+
+func SupportedBrowserTypes() []string { return append([]string(nil), supportedBrowserTypes...) }
+
+func SupportedNetworkModes() []string { return append([]string(nil), supportedNetworkModes...) }
 
 func NewID() (string, error) {
 	b := make([]byte, 16)
@@ -52,6 +66,9 @@ func ValidateName(name string) error {
 		if r < 0x20 || r == 0x7f {
 			return errors.New("container name contains control characters")
 		}
+		if IsBidiControl(r) {
+			return errors.New("container name contains bidirectional formatting characters")
+		}
 	}
 	return nil
 }
@@ -71,8 +88,27 @@ func ValidateIcon(icon string) error {
 		if r < 0x20 || r == 0x7f {
 			return errors.New("icon contains control characters")
 		}
+		if IsBidiControl(r) {
+			return errors.New("icon contains bidirectional formatting characters")
+		}
 	}
 	return nil
+}
+
+// IsBidiControl identifies directional formatting characters that can make a
+// trusted visual label appear in a different order. It intentionally does not
+// reject all Cf characters because emoji sequences commonly require U+200D.
+func IsBidiControl(r rune) bool {
+	switch {
+	case r == '\u061c', r == '\u200e', r == '\u200f':
+		return true
+	case r >= '\u202a' && r <= '\u202e':
+		return true
+	case r >= '\u2066' && r <= '\u2069':
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidateBrowserType(browserType string) error {
@@ -80,6 +116,15 @@ func ValidateBrowserType(browserType string) error {
 		return errors.New("unsupported browser type")
 	}
 	return nil
+}
+
+func ValidateNetworkMode(networkMode string) error {
+	for _, supported := range supportedNetworkModes {
+		if networkMode == supported {
+			return nil
+		}
+	}
+	return errors.New("network mode must be direct, proxy, or template")
 }
 
 func ValidateURL(raw string) (string, error) {

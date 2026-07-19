@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ScopeNest",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "minimum_chrome_version": "116",
   "description": "Isolated browser contexts for testing, research, and development.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0B5YJGfYH3PM5zLNcZ+IrMaMM6Bo0d2J2fNVFRU7utumGjZro0VsG0OEEf5pcORvcGK2kLK7Ha/FI7fRIGbK8KJe7MQ45X8UtiqOvP8UKOS8z5ZVn+6ZvpBzwhuyWzhGf0YnRFGkuYisfgxSry1i8Dr30OdXHdoH+o1wkW7Dust/drDDLvDAUKHbyOcHVP0jVX9z4WnHCPS1en+1GxvxkVpTi2zNbX7dOQlPCZDePfSCNbrBy0xrhuWC18wf/pf4y1qwnpJZyl6763/oGTF75H99tVyV/kIUdG0RsQFnH3YZNM/59hm7rdVHY/lz17tplP+IioZGTXGlP/8fzkEFvwIDAQAB",

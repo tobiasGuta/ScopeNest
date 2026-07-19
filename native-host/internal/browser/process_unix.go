@@ -15,8 +15,8 @@ type groupProcess struct {
 	pgid    int
 }
 
-func (ExecLauncher) Start(executable string, args []string) (Process, error) {
-	cmd := exec.Command(executable, args...)
+func (ExecLauncher) Start(spec LaunchSpec) (Process, error) {
+	cmd := exec.Command(spec.Executable, spec.Arguments...)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -24,7 +24,9 @@ func (ExecLauncher) Start(executable string, args []string) (Process, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &groupProcess{process: cmd.Process, pgid: cmd.Process.Pid}, nil
+	managed := &groupProcess{process: cmd.Process, pgid: cmd.Process.Pid}
+	startVisualIdentity(managed, spec.Identity)
+	return managed, nil
 }
 
 func (p *groupProcess) PID() int { return p.process.Pid }
