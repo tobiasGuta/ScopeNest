@@ -647,12 +647,22 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 		}
 	}
 
-	args, err := browser.Arguments(profile, validatedURL, proxyOpts)
+	identity := browser.VisualIdentity{Name: c.Name, Color: c.Color, Icon: c.Icon}
+	args, err := browser.Arguments(browser.ArgumentOptions{
+		ProfilePath: profile,
+		URL:         validatedURL,
+		Proxy:       proxyOpts,
+		Identity:    identity,
+	})
 	if err != nil {
 		releaseReservation()
-		return model.Container{}, fail("INVALID_URL", "%v", err)
+		return model.Container{}, fail("INVALID_BROWSER_ARGUMENTS", "%v", err)
 	}
-	process, err := h.launcher.Start(executable, args)
+	process, err := h.launcher.Start(browser.LaunchSpec{
+		Executable: executable,
+		Arguments:  args,
+		Identity:   identity,
+	})
 	if err != nil {
 		releaseReservation()
 		return model.Container{}, fail("LAUNCH_FAILED", "browser could not be started: %v", err)

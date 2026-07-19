@@ -167,6 +167,24 @@ func waitForStartupCleanup(t *testing.T, nativeHost *host.Host) {
 	}
 }
 
+func waitForStoppedContainer(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		db, err := st.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, container := range db.Containers {
+			if container.ID == id && container.State == model.StateStopped && !container.Running && container.PID == 0 {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the owned process watcher to persist stopped state")
+}
+
 func connectClient(t *testing.T, handler CommandHandler) (*mcp.ClientSession, func()) {
 	t.Helper()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -604,10 +622,26 @@ func (p *controlledProcess) Terminate() error {
 	return nil
 }
 
-type controlledLauncher struct{ process *controlledProcess }
+type controlledLauncher struct {
+	process  *controlledProcess
+	recorded *browser.LaunchSpec
+}
 
-func (l controlledLauncher) Start(_ string, args []string) (browser.Process, error) {
-	for _, arg := range args {
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func (l controlledLauncher) Start(spec browser.LaunchSpec) (browser.Process, error) {
+	if l.recorded != nil {
+		*l.recorded = spec
+		l.recorded.Arguments = append([]string(nil), spec.Arguments...)
+	}
+	for _, arg := range spec.Arguments {
 		if strings.HasPrefix(arg, "--user-data-dir=") {
 			l.process.lockPath = filepath.Join(strings.TrimPrefix(arg, "--user-data-dir="), "SingletonLock")
 			if err := os.WriteFile(l.process.lockPath, []byte("owned"), 0600); err != nil {
@@ -634,7 +668,8 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	process := &controlledProcess{pid: 4242, done: make(chan struct{})}
-	ownerHost := host.New(st, controlledLauncher{process}, nil)
+	var launchSpec browser.LaunchSpec
+	ownerHost := host.New(st, controlledLauncher{process: process, recorded: &launchSpec}, nil)
 	owner := NewAdapter(ownerHost)
 	createData, err := json.Marshal(map[string]any{"name": "Owned", "color": "#725cff", "browserType": "chrome", "browserExecutable": executable, "networkMode": "direct"})
 	if err != nil {
@@ -648,6 +683,12 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 	launched := owner.LaunchForMCP(container.ID, container.Name, "")
 	if !launched.Success {
 		t.Fatalf("launch: %#v", launched)
+	}
+	if launchSpec.Identity != (browser.VisualIdentity{Name: "Owned", Color: "#725cff"}) {
+		t.Fatalf("MCP launch did not use the shared host visual identity path: %#v", launchSpec.Identity)
+	}
+	if !containsString(launchSpec.Arguments, "--window-name=ScopeNest — Owned") {
+		t.Fatalf("MCP launch is missing the shared window-name argument: %#v", launchSpec.Arguments)
 	}
 
 	nonOwner := NewAdapter(host.New(st, controlledLauncher{process: &controlledProcess{pid: 9999, done: make(chan struct{})}}, nil))
@@ -670,6 +711,7 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 	if process.Running() {
 		t.Fatal("owner did not terminate its process")
 	}
+	waitForStoppedContainer(t, st, container.ID)
 }
 
 func TestPersistedPIDNeverGrantsCloseAuthority(t *testing.T) {

@@ -84,6 +84,11 @@ input::placeholder { color: #9893aa; }
 dialog { width: min(390px, calc(100vw - 24px)); border: 0; border-radius: 17px; padding: 0; color: var(--ink); box-shadow: var(--shadow); } dialog::backdrop { background: rgba(24,19,51,.48); backdrop-filter: blur(2px); }
 dialog form { padding: 20px; }.dialog-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }.dialog-head h2 { margin: 0; font-size: 18px; }.eyebrow { margin: 0 0 4px; color: var(--brand); font-size: 10px; font-weight: 800; letter-spacing: .1em; }
 dialog label { display: grid; gap: 5px; margin-bottom: 12px; color: #4b465e; font-size: 12px; font-weight: 650; }.form-row { display: grid; grid-template-columns: 90px 1fr; gap: 10px; }.form-row input[type=color] { padding: 4px; }
+.identity-preview { --identity-preview-color: #725cff; display: grid; grid-template-columns: 12px minmax(0,1fr); gap: 10px; align-items: stretch; margin: -2px 0 14px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); }
+.identity-preview-swatch { width: 12px; min-height: 50px; border-radius: 6px; background: var(--identity-preview-color); }
+.identity-preview-heading { margin: 0 0 3px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.identity-preview output { display: block; overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.identity-preview-help { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.35; }
 .checkbox { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 8px; }.checkbox input { width: auto; min-height: auto; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 17px; }.form-error { padding: 9px; margin: 0; border-radius: 8px; color: var(--danger); background: var(--danger-soft); font-size: 12px; }
 .confirm-dialog { text-align: center; }.danger-icon { width: 44px; height: 44px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 50%; color: var(--danger); background: var(--danger-soft); font-size: 22px; font-weight: 800; }.confirm-dialog p { color: var(--muted); }.confirm-dialog .dialog-actions { justify-content: center; }

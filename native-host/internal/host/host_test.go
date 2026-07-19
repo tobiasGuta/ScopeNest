@@ -28,7 +28,7 @@ import (
 
 type failingLauncher struct{ err error }
 
-func (f failingLauncher) Start(_ string, _ []string) (browser.Process, error) {
+func (f failingLauncher) Start(_ browser.LaunchSpec) (browser.Process, error) {
 	return nil, f.err
 }
 
@@ -108,7 +108,7 @@ type queuedLauncher struct {
 	calls     int
 }
 
-func (l *queuedLauncher) Start(_ string, _ []string) (browser.Process, error) {
+func (l *queuedLauncher) Start(_ browser.LaunchSpec) (browser.Process, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
@@ -133,7 +133,7 @@ type gatedLauncher struct {
 	once    sync.Once
 }
 
-func (l *gatedLauncher) Start(_ string, _ []string) (browser.Process, error) {
+func (l *gatedLauncher) Start(_ browser.LaunchSpec) (browser.Process, error) {
 	l.once.Do(func() { close(l.started) })
 	<-l.release
 	return l.process, nil
@@ -1224,15 +1224,18 @@ func TestLaunchFailureReleasesReservation(t *testing.T) {
 type recordingLauncher struct {
 	mu      sync.Mutex
 	args    []string
+	spec    browser.LaunchSpec
 	calls   int
 	process browser.Process
 }
 
-func (l *recordingLauncher) Start(_ string, args []string) (browser.Process, error) {
+func (l *recordingLauncher) Start(spec browser.LaunchSpec) (browser.Process, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
-	l.args = append([]string(nil), args...)
+	l.args = append([]string(nil), spec.Arguments...)
+	l.spec = spec
+	l.spec.Arguments = append([]string(nil), spec.Arguments...)
 	return l.process, nil
 }
 
@@ -1240,6 +1243,14 @@ func (l *recordingLauncher) snapshot() (int, []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.calls, append([]string(nil), l.args...)
+}
+
+func (l *recordingLauncher) snapshotSpec() browser.LaunchSpec {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	result := l.spec
+	result.Arguments = append([]string(nil), l.spec.Arguments...)
+	return result
 }
 
 func proxyLaunchHost(t *testing.T, behavior string) (*Host, *store.Store, *recordingLauncher, string, *int) {
@@ -1302,6 +1313,35 @@ func TestProxyUnavailableWarnChecksListenerWarnsAndLaunchesWithProxyNoDirectFall
 	}
 	if !containsArgument(args, "--proxy-server=") || !containsArgument(args, "--disable-quic") {
 		t.Fatalf("proxy arguments missing: %v", args)
+	}
+}
+
+func TestLaunchUsesVisualIdentityFromCurrentReservedContainerRecord(t *testing.T) {
+	h, st, launcher, id, _ := proxyLaunchHost(t, "warn")
+	if err := st.Update(func(db *model.Database) error {
+		for index := range db.Containers {
+			if db.Containers[index].ID == id {
+				db.Containers[index].Name = "Current identity"
+				db.Containers[index].Color = "#123456"
+				db.Containers[index].Icon = "🔬"
+				return nil
+			}
+		}
+		return errors.New("test container not found")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.launch(launchInput{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	spec := launcher.snapshotSpec()
+	wantIdentity := browser.VisualIdentity{Name: "Current identity", Color: "#123456", Icon: "🔬"}
+	if spec.Identity != wantIdentity {
+		t.Fatalf("launch identity = %#v, want current reserved record %#v", spec.Identity, wantIdentity)
+	}
+	if !containsExactArgument(spec.Arguments, "--window-name=[🔬] ScopeNest — Current identity") {
+		t.Fatalf("current identity window-name argument is missing: %#v", spec.Arguments)
 	}
 }
 

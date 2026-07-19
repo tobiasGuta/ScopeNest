@@ -19,6 +19,8 @@ locked store / browser launcher / certificate manager
 
 The MCP executable initializes the same data directory, store migrations, certificate manager, browser launcher, and long-lived `host.Host` used by `scopenest-host`. MCP inputs are strictly decoded by the MCP layer and mapped through a separate allowlist. Ordinary commands pass through `Host.Handle`; launch uses the dedicated `Host.LaunchForMCP` path so MCP-only launch restrictions remain inside the host's launch-reservation transaction. There is no generic command tool or remotely supplied launch-policy argument.
 
+Extension and MCP launches use the same typed browser launch specification. The current reserved container record supplies its validated name, color, and icon; the shared browser layer adds the bounded Chromium window name and, on Windows, performs Job Object-owned best-effort native styling of the initial window. This adds no MCP tool, argument, listener, browser-page access, or extension communication path. It neither reads page content nor alters the tested web application.
+
 The server uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) v1.6.1 stable release and its newline-delimited JSON `StdioTransport`. It does not start HTTP, TCP, WebSocket, SSE, named-pipe, Unix-socket, or other listeners.
 
 ## What it cannot do

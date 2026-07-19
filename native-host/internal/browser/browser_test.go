@@ -7,11 +7,123 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func TestWindowLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		identity VisualIdentity
+		expected string
+	}{
+		{name: "icon and name", identity: VisualIdentity{Name: "Research", Icon: "🔬"}, expected: "[🔬] ScopeNest — Research"},
+		{name: "name only", identity: VisualIdentity{Name: "Work"}, expected: "ScopeNest — Work"},
+		{name: "safe default", identity: VisualIdentity{}, expected: "ScopeNest"},
+		{name: "normalized whitespace", identity: VisualIdentity{Name: "  red\tteam\u2028window  ", Icon: "  🧪  "}, expected: "[🧪] ScopeNest — red team window"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if actual := WindowLabel(test.identity); actual != test.expected {
+				t.Fatalf("WindowLabel() = %q, want %q", actual, test.expected)
+			}
+		})
+	}
+}
+
+func TestWindowLabelIsRuneSafeAndBounded(t *testing.T) {
+	label := WindowLabel(VisualIdentity{Name: strings.Repeat("界", 200), Icon: "🧪"})
+	if !utf8.ValidString(label) {
+		t.Fatal("label is not valid UTF-8")
+	}
+	if count := utf8.RuneCountInString(label); count != maxWindowLabelRunes {
+		t.Fatalf("label contains %d runes, want %d", count, maxWindowLabelRunes)
+	}
+}
+
+func TestWindowLabelDefensivelyRemovesControlsAndExcludesLaunchMetadata(t *testing.T) {
+	label := WindowLabel(VisualIdentity{Name: "  Team\n\r\tWindow\u2029  ", Icon: "A\u0000"})
+	if label != "[A] ScopeNest — Team Window" {
+		t.Fatalf("defensively normalized label = %q", label)
+	}
+	for _, forbidden := range []string{
+		"0123456789abcdef0123456789abcdef",
+		`C:\\Users\\example\\ScopeNest\\containers`,
+		"https://example.com/",
+		"--proxy-server",
+	} {
+		if strings.Contains(label, forbidden) {
+			t.Fatalf("label contains unrelated launch metadata %q: %q", forbidden, label)
+		}
+	}
+}
+
+func TestArgumentsIncludeOneSeparatedWindowName(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "profile")
+	identity := VisualIdentity{Name: "Research --remote-debugging-port=9222", Color: "#123456", Icon: "🔬"}
+	args, err := Arguments(ArgumentOptions{ProfilePath: profile, Identity: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--window-name=[🔬] ScopeNest — Research --remote-debugging-port=9222"
+	count := 0
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--window-name=") {
+			count++
+			if arg != want {
+				t.Fatalf("window-name argument = %q, want %q", arg, want)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("found %d window-name arguments, want 1: %#v", count, args)
+	}
+}
+
+func TestArgumentsRejectIdentityControlCharacterInjection(t *testing.T) {
+	identities := []VisualIdentity{
+		{Name: "Research\n--remote-debugging-port=9222", Color: "#123456"},
+		{Name: "Research", Color: "#123456", Icon: "A\n--incognito"},
+	}
+	for _, identity := range identities {
+		_, err := Arguments(ArgumentOptions{ProfilePath: filepath.Join(t.TempDir(), "profile"), Identity: identity})
+		if err == nil {
+			t.Fatalf("accepted a control character in visual identity %#v", identity)
+		}
+	}
+}
+
+func TestIdentityColorLuminanceAndContrast(t *testing.T) {
+	tests := []struct {
+		value         string
+		wantLuminance float64
+		wantText      rgbColor
+	}{
+		{value: "#000000", wantLuminance: 0, wantText: rgbColor{red: 0xff, green: 0xff, blue: 0xff}},
+		{value: "#ffffff", wantLuminance: 1, wantText: rgbColor{}},
+		{value: "#ff0000", wantLuminance: 0.2126, wantText: rgbColor{}},
+		{value: "#00ff00", wantLuminance: 0.7152, wantText: rgbColor{}},
+		{value: "#0000ff", wantLuminance: 0.0722, wantText: rgbColor{red: 0xff, green: 0xff, blue: 0xff}},
+		{value: "#666666", wantLuminance: 0.132868, wantText: rgbColor{red: 0xff, green: 0xff, blue: 0xff}},
+		{value: "#777777", wantLuminance: 0.184475, wantText: rgbColor{}},
+	}
+	for _, test := range tests {
+		color, err := parseRGB(test.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := relativeLuminance(color)
+		if difference := actual - test.wantLuminance; difference < -0.00001 || difference > 0.00001 {
+			t.Fatalf("relativeLuminance(%s) = %f, want %f", test.value, actual, test.wantLuminance)
+		}
+		if text := contrastingTextColor(color); text != test.wantText {
+			t.Fatalf("contrastingTextColor(%s) = %#v, want %#v", test.value, text, test.wantText)
+		}
+	}
+}
 
 func TestArgumentsAreSeparatedAndStable(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "profile with spaces")
-	args, err := Arguments(profile, "https://example.com/path?q=hello%20world", ProxyOptions{})
+	args, err := Arguments(ArgumentOptions{ProfilePath: profile, URL: "https://example.com/path?q=hello%20world"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,13 +143,13 @@ func TestArgumentsAreSeparatedAndStable(t *testing.T) {
 }
 
 func TestArgumentsRejectUnsafeURLSchemes(t *testing.T) {
-	if _, err := Arguments(filepath.Join(t.TempDir(), "profile"), "file:///etc/passwd", ProxyOptions{}); err == nil {
+	if _, err := Arguments(ArgumentOptions{ProfilePath: filepath.Join(t.TempDir(), "profile"), URL: "file:///etc/passwd"}); err == nil {
 		t.Fatal("accepted file URL")
 	}
 }
 
 func TestArgumentsRequireAbsoluteProfile(t *testing.T) {
-	if _, err := Arguments("relative/profile", "", ProxyOptions{}); err == nil {
+	if _, err := Arguments(ArgumentOptions{ProfilePath: "relative/profile"}); err == nil {
 		t.Fatal("accepted relative profile path")
 	}
 }
@@ -46,12 +158,12 @@ func TestArgumentsWithProxyOptions(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "proxy_profile")
 
 	// Test HTTP proxy without bypass rules
-	args, err := Arguments(profile, "", ProxyOptions{
+	args, err := Arguments(ArgumentOptions{ProfilePath: profile, Proxy: ProxyOptions{
 		Enabled:  true,
 		Protocol: "http",
 		Host:     "127.0.0.1",
 		Port:     8080,
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,13 +186,13 @@ func TestArgumentsWithProxyOptions(t *testing.T) {
 	}
 
 	// Test SOCKS5 with bypass rules
-	args, err = Arguments(profile, "", ProxyOptions{
+	args, err = Arguments(ArgumentOptions{ProfilePath: profile, Proxy: ProxyOptions{
 		Enabled:     true,
 		Protocol:    "socks5",
 		Host:        "192.168.1.1",
 		Port:        1080,
 		BypassRules: []string{"*.local", "localhost"},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +230,7 @@ func TestArgumentsUseJoinHostPortForIPv6ProxyHosts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args, err := Arguments(profile, "", tc.options)
+			args, err := Arguments(ArgumentOptions{ProfilePath: profile, Proxy: tc.options})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +278,10 @@ func TestManagedProcessTreeHelper(t *testing.T) {
 
 func TestExecLauncherTerminatesOwnedProcessTree(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "child-started")
-	process, err := (ExecLauncher{}).Start(os.Args[0], []string{"-test.run=TestManagedProcessTreeHelper", "--", "tree-root", marker})
+	process, err := (ExecLauncher{}).Start(LaunchSpec{
+		Executable: os.Args[0],
+		Arguments:  []string{"-test.run=TestManagedProcessTreeHelper", "--", "tree-root", marker},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

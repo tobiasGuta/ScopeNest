@@ -16,14 +16,17 @@ import (
 const (
 	creationSuspended                   = 0x00000004
 	jobObjectBasicAccountingInformation = 1
-	jobObjectExtendedLimitInformation   = 9
-	jobObjectLimitKillOnJobClose        = 0x00002000
-	processTerminate                    = 0x0001
-	processSetQuota                     = 0x0100
-	processQueryLimitedInformation      = 0x1000
-	threadSuspendResume                 = 0x0002
-	th32csSnapThread                    = 0x00000004
-	invalidSuspendCount                 = 0xffffffff
+	// JOBOBJECTINFOCLASS values are defined by Microsoft; process-ID list is 3.
+	// https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject
+	jobObjectBasicProcessIDList       = 3
+	jobObjectExtendedLimitInformation = 9
+	jobObjectLimitKillOnJobClose      = 0x00002000
+	processTerminate                  = 0x0001
+	processSetQuota                   = 0x0100
+	processQueryLimitedInformation    = 0x1000
+	threadSuspendResume               = 0x0002
+	th32csSnapThread                  = 0x00000004
+	invalidSuspendCount               = 0xffffffff
 )
 
 var (
@@ -99,12 +102,12 @@ type jobProcess struct {
 	closed  bool
 }
 
-func (ExecLauncher) Start(executable string, args []string) (Process, error) {
+func (ExecLauncher) Start(spec LaunchSpec) (Process, error) {
 	job, err := newKillOnCloseJob()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(executable, args...)
+	cmd := exec.Command(spec.Executable, spec.Arguments...)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -127,6 +130,7 @@ func (ExecLauncher) Start(executable string, args []string) (Process, error) {
 		managed.closeJob()
 		return nil, err
 	}
+	startVisualIdentity(managed, spec.Identity)
 	return managed, nil
 }
 
@@ -187,6 +191,15 @@ func (p *jobProcess) activeProcesses() (uint32, error) {
 		return 0, callErr
 	}
 	return info.ActiveProcesses, nil
+}
+
+func (p *jobProcess) ownedProcessIDs() (map[uint32]struct{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return map[uint32]struct{}{}, nil
+	}
+	return queryJobProcessIDs(p.job, systemJobQuery)
 }
 
 func (p *jobProcess) closeJob() {

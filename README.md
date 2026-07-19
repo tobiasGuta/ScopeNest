@@ -14,6 +14,7 @@ Chrome does not expose Firefox's `contextualIdentities` API, and an extension ca
 --user-data-dir=<managed ScopeNest container>/profile
 --profile-directory=Default
 --new-window
+--window-name=[optional icon] ScopeNest — container name
 ```
 
 No shell is involved. The Go host passes every argument separately to the operating system.
@@ -21,7 +22,7 @@ No shell is involved. The Go host passes every argument separately to the operat
 ## Features
 
 - Create, edit, duplicate, search, filter, sort, and permanently delete named contexts.
-- Assign a color and optional emoji/icon to each container.
+- Assign a color and optional emoji/icon to each container, with a live preview of its browser-window identity.
 - Launch a blank window, a manually entered HTTP(S) URL, or the current page.
 - See running state, last launch, selected browser, and exact profile path.
 - Create fresh temporary contexts that are removed after their owned browser process tree exits when safe.
@@ -55,6 +56,8 @@ No shell is involved. The Go host passes every argument separately to the operat
 The persistent native port lets the host observe browser-process exit while the connection remains alive. A new host invocation writes its first valid native-message response immediately, then retries temporary cleanup in the background. `ping` and `get_status` report that cleanup as `pending`, `running`, `completed`, or `failed`. Chrome, Edge, and additional profiles may each start a host process, so every metadata transaction takes a timed operating-system lock. Launches additionally reserve a container with a unique token before starting the browser.
 
 Process ownership is platform-specific. On Windows, ScopeNest starts the browser suspended, assigns it to a private Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and then resumes it. On Linux, it starts the browser in a dedicated process group. A close request terminates only that in-memory owned Job Object or process group, and the watcher waits for the owned tree to empty before marking the container stopped. Persisted PIDs are status hints only and are never reopened as kill authority or accepted as proof that an unowned container is running. For unowned containers, Chromium profile-lock markers are the authoritative lifecycle signal and are checked again before deletion or relaunch.
+
+Each launch also derives a non-sensitive window label from the container's icon and name and supplies it once through Chromium's [`--window-name`](https://chromium.googlesource.com/chromium/src.git/+/master/chrome/common/chrome_switches.cc) switch. The label is single-line, whitespace-normalized, and bounded to 120 Unicode code points. On Windows, a short asynchronous poll uses only the exact launch Job Object's current process-ID list to find the first visible, unowned top-level window, then applies the container color as a best-effort DWM border/caption identity. Unsupported DWM styling never fails or terminates a browser launch. V1 styles only the initial window; later windows opened inside the same container may retain the system border. Non-Windows platforms retain the Chromium window label and intentionally skip native styling. Color is always paired with the icon and full name, and the extension preview uses ordinary DOM text APIs. This feature adds no page injection, page access, extension permission, arbitrary launch flag, or change to profile/process isolation, and it does not recolor Chrome's full toolbar or the tested webpage.
 
 Extension requests use command-specific deadlines: 15 seconds for status and validation reads, 30 seconds for create/update/launch/close operations, and 5 minutes for profile deletion or manual temporary cleanup. The longer destructive-operation deadline accommodates large profiles and Windows antivirus scanning without making routine health checks wait unnecessarily.
 

@@ -1,4 +1,30 @@
 export const DEFAULT_COLOR = "#725cff";
+export const MAX_WINDOW_LABEL_RUNES = 120;
+
+const labelWhitespaceOrControl = /[\p{Cc}\p{Zl}\p{Zp}\s]/u;
+
+function normalizeWindowLabelPart(value) {
+  let result = "";
+  let pendingSpace = false;
+  for (const rune of String(value || "").trim()) {
+    if (labelWhitespaceOrControl.test(rune)) {
+      pendingSpace = result.length > 0;
+      continue;
+    }
+    if (pendingSpace) result += " ";
+    pendingSpace = false;
+    result += rune;
+  }
+  return result;
+}
+
+export function visualIdentityLabel({ name = "", icon = "" } = {}) {
+  const safeName = normalizeWindowLabelPart(name);
+  const safeIcon = normalizeWindowLabelPart(icon);
+  let label = safeIcon ? `[${safeIcon}] ScopeNest` : "ScopeNest";
+  if (safeName) label += ` — ${safeName}`;
+  return [...label].slice(0, MAX_WINDOW_LABEL_RUNES).join("");
+}
 
 export function validateContainer(input) {
   const value = {

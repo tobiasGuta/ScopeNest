@@ -126,6 +126,15 @@
         <label>Color<input id="color" name="color" type="color" value="#725cff"></label>
         <label>Icon or emoji<input id="icon" name="icon" maxlength="16" placeholder="🔐"></label>
       </div>
+      <div id="identity-preview" class="identity-preview" role="group" aria-labelledby="identity-preview-heading" aria-describedby="identity-preview-help identity-preview-color-text">
+        <span class="identity-preview-swatch" aria-hidden="true"></span>
+        <div>
+          <p id="identity-preview-heading" class="identity-preview-heading">Browser window preview</p>
+          <output id="identity-preview-text" aria-live="polite">ScopeNest</output>
+          <p id="identity-preview-help" class="identity-preview-help">The initial browser window uses this name and color for recognition.</p>
+          <span id="identity-preview-color-text" class="sr-only">Window accent color #725cff</span>
+        </div>
+      </div>
       <label>Browser<select id="browser" name="browser" required></select></label>
       <label id="browser-path-wrap">Browser executable<input id="browser-path" name="browserPath" required placeholder="Full path to browser executable" spellcheck="false"></label>
       

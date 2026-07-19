@@ -1,6 +1,6 @@
 import { request, toast } from "./api.js";
 import { button, formatDate, toggleMenu, confirmDelete, bindDialogControls } from "./common.js";
-import { containerCommandData, validateContainer, validateWebURL } from "../shared/validation.js";
+import { containerCommandData, validateContainer, validateWebURL, visualIdentityLabel } from "../shared/validation.js";
 import { connectionView, visibleContainers } from "./state.js";
 import { savePreferences } from "../shared/storage.js";
 import { checkReadiness } from "./readiness.js";
@@ -8,6 +8,14 @@ import { checkReadiness } from "./readiness.js";
 const $ = (selector) => document.querySelector(selector);
 
 export function initContainers(state, refreshApp) {
+  function updateVisualIdentityPreview() {
+    const label = visualIdentityLabel({ name: $("#name").value, icon: $("#icon").value });
+    const color = /^#[0-9a-fA-F]{6}$/.test($("#color").value) ? $("#color").value : "#725cff";
+    $("#identity-preview-text").textContent = label;
+    $("#identity-preview-color-text").textContent = `Window accent color ${color}`;
+    $("#identity-preview").style.setProperty("--identity-preview-color", color);
+  }
+
   function browserLabel(container) {
     return ({ chrome: "Chrome", chromium: "Chromium", edge: "Edge", brave: "Brave", custom: "Custom" })[container.browserType] || container.browserType;
   }
@@ -111,6 +119,7 @@ export function initContainers(state, refreshApp) {
     $("#save").textContent = container ? "Save changes" : isTemp ? "Create & launch" : "Create container";
     $("#name").value = container?.name || (isTemp ? `Temporary ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "");
     $("#color").value = container?.color || (isTemp ? "#d28b26" : "#725cff"); $("#icon").value = container?.icon || (isTemp ? "⚡" : "");
+    updateVisualIdentityPreview();
     $("#launch-after").checked = isTemp; $("#launch-after").closest("label").hidden = isTemp;
     
     // Fill network mode
@@ -224,6 +233,7 @@ export function initContainers(state, refreshApp) {
 
   $("#new-container").addEventListener("click", () => openDialog()); $("#new-temporary").addEventListener("click", () => openDialog(null, true)); $("#empty-create").addEventListener("click", () => openDialog());
   $("#container-form").addEventListener("submit", saveForm); $("#browser").addEventListener("change", syncBrowserPath); $("#retry").addEventListener("click", refreshApp);
+  for (const field of ["#name", "#icon", "#color"]) $(field).addEventListener("input", updateVisualIdentityPreview);
   $("#search").addEventListener("input", renderContainers);
   $("#filter").addEventListener("change", async (event) => { state.preferences = await savePreferences(chrome.storage.local, { filter: event.target.value }); renderContainers(); });
   $("#sort").addEventListener("change", async (event) => { state.preferences = await savePreferences(chrome.storage.local, { sort: event.target.value }); renderContainers(); });

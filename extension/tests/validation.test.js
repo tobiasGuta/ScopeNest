@@ -1,11 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { containerCommandData, sortContainers, validateContainer, validateWebURL } from "../src/shared/validation.js";
+import { containerCommandData, MAX_WINDOW_LABEL_RUNES, sortContainers, validateContainer, validateWebURL, visualIdentityLabel } from "../src/shared/validation.js";
 
 const valid = { name: "Target — User A", color: "#725cff", icon: "🔐", browserType: "chrome", browserExecutable: "/opt/google/chrome" };
 
 test("normalizes a valid container", () => {
   assert.equal(validateContainer({ ...valid, name: "  Target — User A  " }).name, valid.name);
+});
+
+test("builds a safe visual identity label for the browser preview", () => {
+  assert.equal(visualIdentityLabel({ name: "Research", icon: "🔬" }), "[🔬] ScopeNest — Research");
+  assert.equal(visualIdentityLabel({ name: " Work " }), "ScopeNest — Work");
+  assert.equal(visualIdentityLabel(), "ScopeNest");
+  assert.equal(visualIdentityLabel({ name: "red\tteam\u2028window", icon: " 🧪 " }), "[🧪] ScopeNest — red team window");
+});
+
+test("bounds the visual identity label without splitting Unicode code points", () => {
+  const label = visualIdentityLabel({ name: "界".repeat(200), icon: "🧪" });
+  assert.equal([...label].length, MAX_WINDOW_LABEL_RUNES);
+  assert.equal(label.includes("�"), false);
 });
 
 test("rejects invalid names, colors, icons, browsers, and paths", () => {
