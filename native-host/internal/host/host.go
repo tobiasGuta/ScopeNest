@@ -99,6 +99,11 @@ type launchInput struct {
 	URL string `json:"url,omitempty"`
 }
 
+type launchPolicy struct {
+	expectedName        string
+	requireStandardType bool
+}
+
 type validatePathInput struct {
 	Path string `json:"path"`
 }
@@ -187,6 +192,21 @@ func DecodeRequest(payload []byte) (protocol.Request, error) {
 
 func (h *Host) Handle(req protocol.Request) protocol.Response {
 	data, err := h.dispatch(req)
+	return commandResponse(req, data, err)
+}
+
+// LaunchForMCP applies MCP-only identity and browser restrictions while the
+// current container record is reserved for launch under the store lock.
+func (h *Host) LaunchForMCP(id, expectedName, url string) protocol.Response {
+	req := protocol.Request{Version: protocol.Version, Command: "launch_container"}
+	data, err := h.launchWithPolicy(launchInput{ID: id, URL: url}, launchPolicy{
+		expectedName:        expectedName,
+		requireStandardType: true,
+	})
+	return commandResponse(req, data, err)
+}
+
+func commandResponse(req protocol.Request, data any, err error) protocol.Response {
 	if err == nil {
 		return protocol.NewSuccess(req, data)
 	}
@@ -572,6 +592,10 @@ func (h *Host) update(in updateInput) (model.Container, error) {
 }
 
 func (h *Host) launch(in launchInput) (model.Container, error) {
+	return h.launchWithPolicy(in, launchPolicy{})
+}
+
+func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Container, error) {
 	if err := security.ValidateID(in.ID); err != nil {
 		return model.Container{}, fail("INVALID_CONTAINER_ID", "%v", err)
 	}
@@ -579,7 +603,7 @@ func (h *Host) launch(in launchInput) (model.Container, error) {
 	if err != nil {
 		return model.Container{}, fail("INVALID_URL", "%v", err)
 	}
-	c, token, effective, certReadiness, err := h.reserveLaunchWithEnvironment(in.ID)
+	c, token, effective, certReadiness, err := h.reserveLaunchWithEnvironment(in.ID, policy)
 	if err != nil {
 		return model.Container{}, err
 	}
@@ -675,11 +699,11 @@ func (h *Host) launch(in launchInput) (model.Container, error) {
 }
 
 func (h *Host) reserveLaunch(id string) (model.Container, string, error) {
-	container, token, _, _, err := h.reserveLaunchWithEnvironment(id)
+	container, token, _, _, err := h.reserveLaunchWithEnvironment(id, launchPolicy{})
 	return container, token, err
 }
 
-func (h *Host) reserveLaunchWithEnvironment(id string) (model.Container, string, effectiveEnvironment, []certificateReadiness, error) {
+func (h *Host) reserveLaunchWithEnvironment(id string, policy launchPolicy) (model.Container, string, effectiveEnvironment, []certificateReadiness, error) {
 	h.mu.Lock()
 	ownedProcess := h.processes[id]
 	h.mu.Unlock()
@@ -699,6 +723,12 @@ func (h *Host) reserveLaunchWithEnvironment(id string) (model.Container, string,
 			container := &db.Containers[i]
 			if container.ID != id {
 				continue
+			}
+			if policy.expectedName != "" && container.Name != policy.expectedName {
+				return fail("CONTAINER_NAME_MISMATCH", "container name changed")
+			}
+			if policy.requireStandardType && !isStandardBrowserType(container.BrowserType) {
+				return fail("CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH", "custom browser requires human launch")
 			}
 			if container.State == model.StateLaunching {
 				reservedAt := container.UpdatedAt
@@ -747,6 +777,15 @@ func (h *Host) reserveLaunchWithEnvironment(id string) (model.Container, string,
 		return fail("NOT_FOUND", "container was not found")
 	})
 	return reserved, token, effective, certs, err
+}
+
+func isStandardBrowserType(browserType string) bool {
+	switch browserType {
+	case "chrome", "chromium", "edge", "brave":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Host) releaseLaunchReservation(id, token string) error {

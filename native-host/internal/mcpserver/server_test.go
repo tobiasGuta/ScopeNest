@@ -61,6 +61,36 @@ func (f *fakeHandler) Handle(request protocol.Request) protocol.Response {
 	return protocol.NewSuccess(request, f.responseData(request.Command))
 }
 
+func (f *fakeHandler) LaunchForMCP(id, expectedName, url string) protocol.Response {
+	requestID, _ := newRequestID()
+	raw, _ := json.Marshal(map[string]any{"id": id, "url": url})
+	request := protocol.Request{Version: protocol.Version, RequestID: requestID, Command: "launch_container", Data: raw}
+	f.mu.Lock()
+	f.calls = append(f.calls, recordedCall{request: request, data: map[string]any{"id": id, "url": url}})
+	f.mu.Unlock()
+
+	encoded, _ := json.Marshal(f.responseData("list_containers"))
+	var containers []struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		BrowserType string `json:"browserType"`
+	}
+	_ = json.Unmarshal(encoded, &containers)
+	for _, container := range containers {
+		if container.ID != id {
+			continue
+		}
+		if container.Name != expectedName {
+			return protocol.NewError(request, "CONTAINER_NAME_MISMATCH", "container name changed")
+		}
+		if !isMCPBrowserType(container.BrowserType) {
+			return protocol.NewError(request, "CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH", "custom browser requires human launch")
+		}
+		return protocol.NewSuccess(request, f.responseData("launch_container"))
+	}
+	return protocol.NewError(request, "NOT_FOUND", "container was not found")
+}
+
 func (f *fakeHandler) responseData(command string) any {
 	if f.dataOverride != nil {
 		if value, ok := f.dataOverride[command]; ok {
@@ -360,14 +390,18 @@ func TestMissingRequiredIdentityFieldRejectedBeforeHost(t *testing.T) {
 }
 
 func TestNoCommandOutsideMCPAllowlistIsReachable(t *testing.T) {
-	handler := &fakeHandler{}
-	response := NewAdapter(handler).Execute("delete_container", map[string]any{"id": testContainerID})
-	if response.Success || response.ErrorCode != "UNKNOWN_COMMAND" {
-		t.Fatalf("unexpected response: %#v", response)
-	}
-	calls, cleanupCalls := handler.snapshot()
-	if len(calls) != 0 || cleanupCalls != 0 {
-		t.Fatalf("forbidden command reached host or cleanup: calls=%d cleanup=%d", len(calls), cleanupCalls)
+	for _, command := range []string{"delete_container", "launch_container"} {
+		t.Run(command, func(t *testing.T) {
+			handler := &fakeHandler{}
+			response := NewAdapter(handler).Execute(command, map[string]any{"id": testContainerID})
+			if response.Success || response.ErrorCode != "UNKNOWN_COMMAND" {
+				t.Fatalf("unexpected response: %#v", response)
+			}
+			calls, cleanupCalls := handler.snapshot()
+			if len(calls) != 0 || cleanupCalls != 0 {
+				t.Fatalf("forbidden command reached host or cleanup: calls=%d cleanup=%d", len(calls), cleanupCalls)
+			}
+		})
 	}
 }
 
@@ -446,32 +480,25 @@ func TestProxyBypassRulesAreNotExposed(t *testing.T) {
 	}
 }
 
-func TestIdentityConfirmationBlocksMutation(t *testing.T) {
+func TestLaunchUsesRestrictedHostMethod(t *testing.T) {
 	tests := []struct {
 		name, id, expected, wantCode string
-		wantMutation                 bool
 	}{
-		{"match", testContainerID, "Target - User A", "", true},
-		{"wrong name", testContainerID, "Target - User B", "CONTAINER_NAME_MISMATCH", false},
-		{"unknown ID", "22222222222222222222222222222222", "Target - User A", "NOT_FOUND", false},
+		{"match", testContainerID, "Target - User A", ""},
+		{"wrong name", testContainerID, "Target - User B", "CONTAINER_NAME_MISMATCH"},
+		{"unknown ID", "22222222222222222222222222222222", "Target - User A", "NOT_FOUND"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			handler := &fakeHandler{}
 			adapter := NewAdapter(handler)
-			response := adapter.ExecuteWithIdentity("launch_container", test.id, test.expected, map[string]any{"id": test.id})
-			if response.Success != test.wantMutation || response.ErrorCode != test.wantCode {
+			response := adapter.LaunchForMCP(test.id, test.expected, "")
+			if response.Success != (test.wantCode == "") || response.ErrorCode != test.wantCode {
 				t.Fatalf("response = %#v", response)
 			}
 			calls, _ := handler.snapshot()
-			mutations := 0
-			for _, call := range calls {
-				if call.request.Command == "launch_container" {
-					mutations++
-				}
-			}
-			if (mutations == 1) != test.wantMutation {
-				t.Fatalf("mutation calls = %d", mutations)
+			if len(calls) != 1 || calls[0].request.Command != "launch_container" {
+				t.Fatalf("restricted launch calls = %#v", calls)
 			}
 		})
 	}
@@ -492,8 +519,8 @@ func TestCustomBrowserRequiresHumanLaunch(t *testing.T) {
 		t.Fatalf("custom-browser launch response = %s", raw)
 	}
 	calls, cleanupCalls := handler.snapshot()
-	if len(calls) != 1 || calls[0].request.Command != "list_containers" || cleanupCalls != 1 {
-		t.Fatalf("custom-browser launch reached mutation: calls=%#v cleanup=%d", calls, cleanupCalls)
+	if len(calls) != 1 || calls[0].request.Command != "launch_container" || cleanupCalls != 1 {
+		t.Fatalf("custom-browser launch did not use restricted host method: calls=%#v cleanup=%d", calls, cleanupCalls)
 	}
 }
 
@@ -585,9 +612,7 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 		t.Fatalf("create: %#v", created)
 	}
 	container := created.Data.(model.Container)
-	launched := owner.ExecuteWithIdentity("launch_container", container.ID, container.Name, struct {
-		ID string `json:"id"`
-	}{container.ID})
+	launched := owner.LaunchForMCP(container.ID, container.Name, "")
 	if !launched.Success {
 		t.Fatalf("launch: %#v", launched)
 	}

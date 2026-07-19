@@ -117,11 +117,7 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 		description: "Launch a standard-browser container at an optional authorized HTTP(S) URL. Custom-browser containers require a human launch. Use only for systems the user owns or is authorized to test. Call scopenest_get_container_readiness first for proxy/template containers. This opens a browser; it does not browse, click, inspect page content, or perform testing.",
 		schema:      launchSchema(), annotations: launch,
 	}, func(in launchContainerInput) protocol.Response {
-		data := struct {
-			ID  string `json:"id"`
-			URL string `json:"url,omitempty"`
-		}{in.ID, in.URL}
-		return adapter.ExecuteWithIdentity("launch_container", in.ID, in.ExpectedName, data)
+		return adapter.LaunchForMCP(in.ID, in.ExpectedName, in.URL)
 	}, validateLaunch)
 
 	addTool(server, toolSpec{

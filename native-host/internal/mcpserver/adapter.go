@@ -12,6 +12,7 @@ import (
 // CommandHandler is the security authority used by the MCP adapter.
 type CommandHandler interface {
 	Handle(protocol.Request) protocol.Response
+	LaunchForMCP(id, expectedName, url string) protocol.Response
 	StartStartupCleanup()
 }
 
@@ -20,7 +21,7 @@ var allowedCommands = map[string]bool{
 	"get_running_containers": true, "list_proxy_profiles": true,
 	"list_environment_templates": true, "get_container_readiness": true,
 	"create_container": true, "create_temporary_container": true,
-	"launch_container": true, "close_container": true,
+	"close_container": true,
 }
 
 // Adapter serializes all access to one long-lived ScopeNest host instance.
@@ -45,7 +46,7 @@ func (a *Adapter) Execute(command string, data any) protocol.Response {
 func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any) protocol.Response {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if command != "launch_container" && command != "close_container" {
+	if command != "close_container" {
 		return localError(command, "UNKNOWN_COMMAND", "The requested ScopeNest operation is not available through MCP.")
 	}
 	list := a.executeLocked("list_containers", struct{}{})
@@ -55,9 +56,8 @@ func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any
 		return list
 	}
 	var containers []struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		BrowserType string `json:"browserType"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	}
 	encoded, err := json.Marshal(list.Data)
 	if err != nil || json.Unmarshal(encoded, &containers) != nil {
@@ -72,16 +72,27 @@ func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any
 			a.scheduleCleanupLocked()
 			return localError(command, "CONTAINER_NAME_MISMATCH", "The expected container name does not match the current container name; no action was taken.")
 		}
-		if command == "launch_container" && container.BrowserType == "custom" {
-			a.scheduleCleanupLocked()
-			return localError(command, "CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH", "Custom-browser containers must be launched by a human through the ScopeNest extension.")
-		}
 		response := a.executeLocked(command, data)
 		a.scheduleCleanupLocked()
 		return response
 	}
 	a.scheduleCleanupLocked()
 	return localError(command, "NOT_FOUND", "The requested container was not found; no action was taken.")
+}
+
+func (a *Adapter) LaunchForMCP(id, expectedName, url string) protocol.Response {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	requestID, err := newRequestID()
+	if err != nil {
+		a.scheduleCleanupLocked()
+		return localError("launch_container", "INTERNAL_ERROR", "ScopeNest could not create an internal request identifier.")
+	}
+	response := a.handler.LaunchForMCP(id, expectedName, url)
+	response.RequestID = requestID
+	response.Command = "launch_container"
+	a.scheduleCleanupLocked()
+	return response
 }
 
 func (a *Adapter) executeLocked(command string, data any) protocol.Response {

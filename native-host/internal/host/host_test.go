@@ -959,6 +959,83 @@ func TestLaunchReservationBlocksAnotherHost(t *testing.T) {
 	}
 }
 
+func TestLaunchForMCPUsesCurrentContainerRecordInReservationTransaction(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*model.Container)
+		wantCode string
+	}{
+		{
+			name: "name changed after list",
+			mutate: func(container *model.Container) {
+				container.Name = "Changed by extension"
+			},
+			wantCode: "CONTAINER_NAME_MISMATCH",
+		},
+		{
+			name: "browser changed to custom after list",
+			mutate: func(container *model.Container) {
+				container.BrowserType = "custom"
+			},
+			wantCode: "CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h, st, executable := testHost(t)
+			launcher := &queuedLauncher{}
+			h.launcher = launcher
+			created := h.Handle(request(t, "create_container", containerInput{Name: "Listed name", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable}))
+			if !created.Success {
+				t.Fatalf("create failed: %#v", created)
+			}
+			container := created.Data.(model.Container)
+
+			listed := h.Handle(protocol.Request{Version: protocol.Version, RequestID: "before-update", Command: "list_containers"})
+			if !listed.Success {
+				t.Fatalf("list failed: %#v", listed)
+			}
+			before := listed.Data.([]model.Container)
+			if len(before) != 1 || before[0].Name != container.Name || before[0].BrowserType != "chrome" {
+				t.Fatalf("unexpected earlier list result: %#v", before)
+			}
+
+			extensionStore, err := store.New(st.Root())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := extensionStore.Update(func(db *model.Database) error {
+				for i := range db.Containers {
+					if db.Containers[i].ID == container.ID {
+						test.mutate(&db.Containers[i])
+						return nil
+					}
+				}
+				return errors.New("container missing from extension update")
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			response := h.LaunchForMCP(container.ID, container.Name, "https://example.com")
+			if response.Success || response.ErrorCode != test.wantCode {
+				t.Fatalf("restricted launch response = %#v", response)
+			}
+			if launcher.CallCount() != 0 {
+				t.Fatalf("browser launcher called %d times", launcher.CallCount())
+			}
+			db, err := st.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := db.Containers[0]
+			if current.State != model.StateStopped || current.LaunchToken != "" || current.LaunchReservedAt != nil {
+				t.Fatalf("rejected MCP launch created a reservation: %#v", current)
+			}
+		})
+	}
+}
+
 func TestConcurrentLaunchReservationsHaveSingleWinner(t *testing.T) {
 	h1, st, executable := testHost(t)
 	created := h1.Handle(request(t, "create_container", containerInput{Name: "Concurrent", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable}))

@@ -17,7 +17,7 @@ host.Host
 locked store / browser launcher / certificate manager
 ```
 
-The MCP executable initializes the same data directory, store migrations, certificate manager, browser launcher, and long-lived `host.Host` used by `scopenest-host`. MCP inputs are strictly decoded by the MCP layer, mapped through a separate allowlist, and passed to `Host.Handle`, whose command-specific handlers strictly decode and validate the internal data. There is no generic command tool.
+The MCP executable initializes the same data directory, store migrations, certificate manager, browser launcher, and long-lived `host.Host` used by `scopenest-host`. MCP inputs are strictly decoded by the MCP layer and mapped through a separate allowlist. Ordinary commands pass through `Host.Handle`; launch uses the dedicated `Host.LaunchForMCP` path so MCP-only launch restrictions remain inside the host's launch-reservation transaction. There is no generic command tool or remotely supplied launch-policy argument.
 
 The server uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) v1.6.1 stable release and its newline-delimited JSON `StdioTransport`. It does not start HTTP, TCP, WebSocket, SSE, named-pipe, Unix-socket, or other listeners.
 
@@ -194,7 +194,7 @@ Launch requires the exact current name as an identity and staleness check:
 }
 ```
 
-`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. The host still validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, launch reservation, and duplicate-launch state.
+`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. The expected name and standard browser type are checked against the current container record while the shared store lock is held in the same transaction that creates the launch reservation. The host also validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, and duplicate-launch state.
 
 Containers configured with `browserType: "custom"` through the human-operated extension cannot be launched by MCP and return `CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH`. Launch them explicitly through the extension instead.
 
@@ -215,7 +215,7 @@ A rejected host operation is an MCP tool error, not a successful tool result con
 }
 ```
 
-Input schemas set `additionalProperties: false`, and MCP handlers independently require exactly one JSON object and strictly decode it before invoking `Host.Handle`. The host then strictly decodes the internal command data again.
+Input schemas set `additionalProperties: false`, and MCP handlers independently require exactly one JSON object and strictly decode it before invoking the corresponding host method. Commands routed through `Host.Handle` are then strictly decoded again.
 
 Standard output is reserved for MCP protocol traffic. The server is silent by default and does not enable the SDK logging capability.
 
