@@ -24,11 +24,12 @@ type createContainerInput struct {
 	Color                 string `json:"color"`
 	Icon                  string `json:"icon,omitempty"`
 	BrowserType           string `json:"browserType"`
-	BrowserExecutable     string `json:"browserExecutable,omitempty"`
 	NetworkMode           string `json:"networkMode"`
 	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
 	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
 }
+
+var mcpBrowserTypes = []string{"chrome", "chromium", "edge", "brave"}
 
 type launchContainerInput struct {
 	ID           string `json:"id"`
@@ -46,9 +47,10 @@ type toolValidationError struct{ code string }
 func (e toolValidationError) Error() string { return e.code }
 
 func registerTools(server *mcp.Server, adapter *Adapter) {
-	readOnly := annotations(true, false, true)
-	mutating := annotations(false, false, false)
-	processControl := annotations(false, true, false)
+	readOnly := annotations(true, false, true, false)
+	mutating := annotations(false, false, false, false)
+	launch := annotations(false, true, false, true)
+	processControl := annotations(false, true, false, false)
 
 	addTool(server, toolSpec{
 		name: "scopenest_ping", command: "ping",
@@ -76,7 +78,7 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 
 	addTool(server, toolSpec{
 		name: "scopenest_list_proxy_profiles", command: "list_proxy_profiles",
-		description: "List existing non-secret loopback proxy-profile metadata for container selection. This tool cannot create or change proxies.",
+		description: "List sanitized loopback proxy-profile metadata for container selection. Bypass rules are excluded, and this tool cannot create or change proxies.",
 		schema:      emptySchema(), annotations: readOnly,
 	}, func(emptyInput) protocol.Response { return adapter.Execute("list_proxy_profiles", struct{}{}) }, validateEmpty)
 
@@ -112,8 +114,8 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 
 	addTool(server, toolSpec{
 		name: "scopenest_launch_container", command: "launch_container",
-		description: "Launch an existing container at an optional authorized HTTP(S) URL. Use only for systems the user owns or is authorized to test. Call scopenest_get_container_readiness first for proxy/template containers. This opens a browser; it does not browse, click, inspect page content, or perform testing.",
-		schema:      launchSchema(), annotations: mutating,
+		description: "Launch a standard-browser container at an optional authorized HTTP(S) URL. Custom-browser containers require a human launch. Use only for systems the user owns or is authorized to test. Call scopenest_get_container_readiness first for proxy/template containers. This opens a browser; it does not browse, click, inspect page content, or perform testing.",
+		schema:      launchSchema(), annotations: launch,
 	}, func(in launchContainerInput) protocol.Response {
 		data := struct {
 			ID  string `json:"id"`
@@ -158,10 +160,14 @@ func addTool[T any](server *mcp.Server, spec toolSpec, execute func(T) protocol.
 }
 
 func strictDecode(raw json.RawMessage, target any) error {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		raw = []byte("{}")
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		trimmed = []byte("{}")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if trimmed[0] != '{' {
+		return errors.New("arguments must be a JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -192,7 +198,7 @@ func validateCreate(in createContainerInput) error {
 	if security.ValidateIcon(in.Icon) != nil {
 		return toolValidationError{"INVALID_ICON"}
 	}
-	if security.ValidateBrowserType(in.BrowserType) != nil {
+	if !isMCPBrowserType(in.BrowserType) {
 		return toolValidationError{"INVALID_BROWSER"}
 	}
 	if security.ValidateNetworkMode(in.NetworkMode) != nil {
@@ -205,6 +211,15 @@ func validateCreate(in createContainerInput) error {
 		return toolValidationError{"INVALID_TEMPLATE_ID"}
 	}
 	return nil
+}
+
+func isMCPBrowserType(browserType string) bool {
+	for _, supported := range mcpBrowserTypes {
+		if browserType == supported {
+			return true
+		}
+	}
+	return false
 }
 
 func validateLaunch(in launchContainerInput) error {
@@ -230,8 +245,7 @@ func validateClose(in closeContainerInput) error {
 	return nil
 }
 
-func annotations(readOnly, destructive, idempotent bool) *mcp.ToolAnnotations {
-	openWorld := false
+func annotations(readOnly, destructive, idempotent, openWorld bool) *mcp.ToolAnnotations {
 	destructiveValue := destructive
 	return &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructiveValue, IdempotentHint: idempotent, OpenWorldHint: &openWorld}
 }
@@ -249,8 +263,7 @@ func createSchema() map[string]any {
 		"name":                  map[string]any{"type": "string", "description": "Container name", "minLength": 1, "maxLength": 80},
 		"color":                 map[string]any{"type": "string", "description": "Six-digit hexadecimal container color", "pattern": "^#[0-9a-fA-F]{6}$"},
 		"icon":                  map[string]any{"type": "string", "description": "Optional short container icon", "maxLength": 8},
-		"browserType":           map[string]any{"type": "string", "description": "Supported Chromium-family browser type", "enum": stringsToAny(security.SupportedBrowserTypes())},
-		"browserExecutable":     map[string]any{"type": "string", "description": "Optional custom Chromium-family executable path; required for browserType custom"},
+		"browserType":           map[string]any{"type": "string", "description": "Standard Chromium-family browser type resolved from locally detected installations", "enum": stringsToAny(mcpBrowserTypes)},
 		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
 		"proxyProfileId":        idProperty("Existing proxy profile ID when networkMode is proxy"),
 		"environmentTemplateId": idProperty("Existing environment template ID when networkMode is template"),

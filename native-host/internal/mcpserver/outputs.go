@@ -93,7 +93,6 @@ type proxyProfileOutput struct {
 	Protocol            string            `json:"protocol"`
 	Host                string            `json:"host"`
 	Port                int               `json:"port"`
-	BypassRules         []string          `json:"bypassRules"`
 	CertificateIDs      []string          `json:"certificateIds"`
 	HealthCheck         proxyHealthOutput `json:"healthCheck"`
 	UnavailableBehavior string            `json:"unavailableBehavior"`

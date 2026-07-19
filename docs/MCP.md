@@ -17,7 +17,7 @@ host.Host
 locked store / browser launcher / certificate manager
 ```
 
-The MCP executable initializes the same data directory, store migrations, certificate manager, browser launcher, and long-lived `host.Host` used by `scopenest-host`. Every tool maps to a fixed ScopeNest command and passes through the existing strict command decoder and validation. There is no generic command tool.
+The MCP executable initializes the same data directory, store migrations, certificate manager, browser launcher, and long-lived `host.Host` used by `scopenest-host`. MCP inputs are strictly decoded by the MCP layer, mapped through a separate allowlist, and passed to `Host.Handle`, whose command-specific handlers strictly decode and validate the internal data. There is no generic command tool.
 
 The server uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) v1.6.1 stable release and its newline-delimited JSON `StdioTransport`. It does not start HTTP, TCP, WebSocket, SSE, named-pipe, Unix-socket, or other listeners.
 
@@ -33,9 +33,15 @@ The first MCP version cannot:
 - import, delete, install, remove, or acknowledge certificate trust;
 - access arbitrary files;
 - add extension permissions or communicate through the extension;
-- use a cloud AI API, telemetry service, or remote configuration service.
+- directly use a cloud AI API, telemetry service, or remote configuration service.
 
 Use launch operations only for systems you own or are authorized to test.
+
+## Model-provider privacy boundary
+
+ScopeNest MCP runs locally, but the selected MCP client may transmit tool names, arguments, and sanitized results to its model provider. Container names, proxy names and listener metadata, template names and descriptions, certificate IDs, browser types, and running-state metadata may therefore leave the device. ScopeNest excludes proxy bypass rules from MCP summaries, but other engagement-sensitive labels and infrastructure metadata remain visible to the client. Review the client's privacy, retention, and training settings before using real engagement names or confidential infrastructure details.
+
+The statement that ScopeNest does not directly use a cloud AI API describes the local MCP server, not the behavior of Codex, Claude, Gemini, or another MCP client.
 
 ## Requirements and builds
 
@@ -156,7 +162,7 @@ Configuration keys and restart behavior are client-specific. ScopeNest has not b
 | `scopenest_launch_container` | `launch_container` | Identity-confirmed browser launch at an optional HTTP(S) URL |
 | `scopenest_close_container` | `close_container` | Identity-confirmed close, limited to this MCP process's owned process tree |
 
-Read-only tools are annotated read-only and idempotent. Create and launch tools are mutating, non-destructive to existing profiles, and non-idempotent. Close is annotated as process control/destructive. Every tool is annotated closed-world.
+Read-only tools are annotated read-only, idempotent, and closed-world. Create tools are additive, non-idempotent, and closed-world. Close is annotated destructive and closed-world. Launch is conservatively annotated destructive, non-idempotent, and open-world because opening an arbitrary HTTP(S) URL can contact an external entity and cause side effects.
 
 ### Examples
 
@@ -166,7 +172,7 @@ Check readiness before launching a proxy/template container:
 {"id":"0123456789abcdef0123456789abcdef"}
 ```
 
-Create a direct Chrome container. ScopeNest resolves a detected executable for a standard browser type; `browserExecutable` is required only for `custom`:
+Create a direct Chrome container. MCP creation accepts only `chrome`, `chromium`, `edge`, or `brave`; ScopeNest resolves a detected executable and the MCP schema does not accept `browserExecutable`:
 
 ```json
 {
@@ -178,7 +184,7 @@ Create a direct Chrome container. ScopeNest resolves a detected executable for a
 }
 ```
 
-Launch requires the exact current name as an identity confirmation:
+Launch requires the exact current name as an identity and staleness check:
 
 ```json
 {
@@ -188,13 +194,15 @@ Launch requires the exact current name as an identity confirmation:
 }
 ```
 
-If the ID is absent or the name has changed, the browser is not launched. The host still validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, launch reservation, and duplicate-launch state.
+`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. The host still validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, launch reservation, and duplicate-launch state.
+
+Containers configured with `browserType: "custom"` through the human-operated extension cannot be launched by MCP and return `CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH`. Launch them explicitly through the extension instead.
 
 ## Output privacy and errors
 
 MCP responses use explicit output models. They never return profile paths, ScopeNest data-directory paths, full browser executable paths, PIDs, launch tokens/reservations, certificate DER/Base64, private keys, lock paths, operating-system trust-store paths, raw metadata records, internal Go errors, or stack traces.
 
-Proxy profiles expose only their name, enabled state, protocol, loopback host/port, bypass rules, certificate IDs, health-check configuration, and unavailable behavior. ScopeNest's loopback-only proxy validation is unchanged.
+Proxy profiles expose only their name, enabled state, protocol, loopback host/port, certificate IDs, health-check configuration, and unavailable behavior. Bypass rules are excluded from MCP output. ScopeNest's loopback-only proxy validation is unchanged.
 
 A rejected host operation is an MCP tool error, not a successful tool result containing an error string. Its structured body preserves the stable ScopeNest `errorCode` with a fixed redacted message, for example:
 
@@ -207,7 +215,7 @@ A rejected host operation is an MCP tool error, not a successful tool result con
 }
 ```
 
-Input schemas set `additionalProperties: false`, and handlers independently use strict JSON decoding before invoking the host. The host then strictly decodes the internal command data again.
+Input schemas set `additionalProperties: false`, and MCP handlers independently require exactly one JSON object and strictly decode it before invoking `Host.Handle`. The host then strictly decodes the internal command data again.
 
 Standard output is reserved for MCP protocol traffic. The server is silent by default and does not enable the SDK logging capability.
 

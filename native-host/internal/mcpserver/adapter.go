@@ -55,8 +55,9 @@ func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any
 		return list
 	}
 	var containers []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		BrowserType string `json:"browserType"`
 	}
 	encoded, err := json.Marshal(list.Data)
 	if err != nil || json.Unmarshal(encoded, &containers) != nil {
@@ -70,6 +71,10 @@ func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any
 		if container.Name != expectedName {
 			a.scheduleCleanupLocked()
 			return localError(command, "CONTAINER_NAME_MISMATCH", "The expected container name does not match the current container name; no action was taken.")
+		}
+		if command == "launch_container" && container.BrowserType == "custom" {
+			a.scheduleCleanupLocked()
+			return localError(command, "CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH", "Custom-browser containers must be launched by a human through the ScopeNest extension.")
 		}
 		response := a.executeLocked(command, data)
 		a.scheduleCleanupLocked()

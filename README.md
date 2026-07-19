@@ -102,9 +102,9 @@ mkdir -p bin
 
 ## MCP integration
 
-`scopenest-mcp` is an optional, separate local process for Codex Desktop and other standards-compliant MCP clients. It uses MCP over stdin/stdout only and delegates every operation to the same `host.Host` validation, store, browser, certificate, locking, reservation, and process-ownership implementation used by the extension. It exposes no page-content, cookie, arbitrary-command, trust-changing, deletion, proxy-mutation, or template-mutation tool.
+`scopenest-mcp` is an optional, separate local process for Codex Desktop and other standards-compliant MCP clients. It uses MCP over stdin/stdout only and delegates every operation to the same `host.Host` validation, store, browser, certificate, locking, reservation, and process-ownership implementation used by the extension. It exposes no page-content, cookie, arbitrary-command, trust-changing, deletion, proxy-mutation, or template-mutation tool. The MCP client may still send sanitized tool arguments and results to its model provider.
 
-See [docs/MCP.md](docs/MCP.md) for the exact tools, build/install commands, Codex registration, privacy guarantees, and separate-process ownership limitations.
+See [docs/MCP.md](docs/MCP.md) for the exact tools, build/install commands, Codex registration, model-provider privacy boundary, and separate-process ownership limitations.
 
 ## Install for development
 

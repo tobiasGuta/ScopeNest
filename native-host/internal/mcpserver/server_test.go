@@ -135,12 +135,21 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 	handler := &fakeHandler{}
 	session, closeSession := connectClient(t, handler)
 	defer closeSession()
-	expected := map[string]bool{
-		"scopenest_ping": true, "scopenest_get_status": true, "scopenest_list_containers": true,
-		"scopenest_list_running_containers": true, "scopenest_list_proxy_profiles": true,
-		"scopenest_list_environment_templates": true, "scopenest_get_container_readiness": true,
-		"scopenest_create_container": true, "scopenest_create_temporary_container": true,
-		"scopenest_launch_container": true, "scopenest_close_container": true,
+	type annotationExpectation struct {
+		readOnly, destructive, idempotent, openWorld bool
+	}
+	expected := map[string]annotationExpectation{
+		"scopenest_ping":                       {true, false, true, false},
+		"scopenest_get_status":                 {true, false, true, false},
+		"scopenest_list_containers":            {true, false, true, false},
+		"scopenest_list_running_containers":    {true, false, true, false},
+		"scopenest_list_proxy_profiles":        {true, false, true, false},
+		"scopenest_list_environment_templates": {true, false, true, false},
+		"scopenest_get_container_readiness":    {true, false, true, false},
+		"scopenest_create_container":           {false, false, false, false},
+		"scopenest_create_temporary_container": {false, false, false, false},
+		"scopenest_launch_container":           {false, true, false, true},
+		"scopenest_close_container":            {false, true, false, false},
 	}
 	seen := map[string]bool{}
 	for tool, err := range session.Tools(context.Background(), nil) {
@@ -148,8 +157,10 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 			t.Fatal(err)
 		}
 		seen[tool.Name] = true
-		if !expected[tool.Name] {
+		want, known := expected[tool.Name]
+		if !known {
 			t.Errorf("unexpected tool %q", tool.Name)
+			continue
 		}
 		if !strings.HasPrefix(tool.Name, "scopenest_") || tool.Description == "" {
 			t.Errorf("invalid tool metadata: %#v", tool)
@@ -158,18 +169,24 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 		if !ok || schema["additionalProperties"] != false {
 			t.Errorf("tool %s is not closed-schema: %#v", tool.Name, tool.InputSchema)
 		}
-		if tool.Annotations == nil || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
-			t.Errorf("tool %s is not closed-world", tool.Name)
-		}
-		readOnly := strings.Contains(tool.Name, "list_") || tool.Name == "scopenest_ping" || tool.Name == "scopenest_get_status" || tool.Name == "scopenest_get_container_readiness"
-		if tool.Annotations.ReadOnlyHint != readOnly {
-			t.Errorf("tool %s readOnlyHint=%v", tool.Name, tool.Annotations.ReadOnlyHint)
-		}
-		if readOnly && !tool.Annotations.IdempotentHint {
-			t.Errorf("tool %s should be idempotent", tool.Name)
+		if tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || tool.Annotations.OpenWorldHint == nil {
+			t.Errorf("tool %s has incomplete annotations: %#v", tool.Name, tool.Annotations)
+		} else if tool.Annotations.ReadOnlyHint != want.readOnly || *tool.Annotations.DestructiveHint != want.destructive || tool.Annotations.IdempotentHint != want.idempotent || *tool.Annotations.OpenWorldHint != want.openWorld {
+			t.Errorf("tool %s annotations = %#v, want %#v", tool.Name, tool.Annotations, want)
 		}
 		if tool.Name == "scopenest_create_container" || tool.Name == "scopenest_create_temporary_container" {
 			assertRequired(t, tool.Name, schema, "name", "color", "browserType", "networkMode")
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool %s has invalid properties: %#v", tool.Name, schema)
+			}
+			if _, exposed := properties["browserExecutable"]; exposed {
+				t.Errorf("tool %s exposes browserExecutable", tool.Name)
+			}
+			browserType, ok := properties["browserType"].(map[string]any)
+			if !ok || !jsonEqual(browserType["enum"], stringsToAny(mcpBrowserTypes)) {
+				t.Errorf("tool %s browser enum = %#v", tool.Name, browserType["enum"])
+			}
 		}
 		if tool.Name == "scopenest_launch_container" || tool.Name == "scopenest_close_container" {
 			assertRequired(t, tool.Name, schema, "id", "expectedName")
@@ -293,6 +310,41 @@ func TestUnknownArgumentsRejectedBeforeHost(t *testing.T) {
 	}
 }
 
+func TestStrictDecodeRequiresJSONObject(t *testing.T) {
+	for _, raw := range []string{"null", "[]", `"string"`, "123", "true"} {
+		t.Run(raw, func(t *testing.T) {
+			if err := strictDecode(json.RawMessage(raw), &emptyInput{}); err == nil {
+				t.Fatalf("accepted non-object arguments %s", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"", "  \t\r\n", "{}", " \n {} \t"} {
+		if err := strictDecode(json.RawMessage(raw), &emptyInput{}); err != nil {
+			t.Errorf("rejected object arguments %q: %v", raw, err)
+		}
+	}
+}
+
+func TestCustomBrowserCreationInputsRejectedBeforeHost(t *testing.T) {
+	tests := []map[string]any{
+		{"name": "Custom", "color": "#725cff", "browserType": "custom", "networkMode": "direct"},
+		{"name": "Path", "color": "#725cff", "browserType": "chrome", "browserExecutable": "C:/local/chrome.exe", "networkMode": "direct"},
+	}
+	for _, args := range tests {
+		handler := &fakeHandler{}
+		session, closeSession := connectClient(t, handler)
+		result := callTool(t, session, "scopenest_create_container", args)
+		closeSession()
+		if !result.IsError {
+			t.Fatalf("unsafe browser input was accepted: %#v", args)
+		}
+		calls, cleanupCalls := handler.snapshot()
+		if len(calls) != 0 || cleanupCalls != 0 {
+			t.Fatalf("unsafe browser input reached host: calls=%d cleanup=%d", len(calls), cleanupCalls)
+		}
+	}
+}
+
 func TestMissingRequiredIdentityFieldRejectedBeforeHost(t *testing.T) {
 	handler := &fakeHandler{}
 	session, closeSession := connectClient(t, handler)
@@ -379,6 +431,21 @@ func TestNonLoopbackProxyMetadataIsNotExposed(t *testing.T) {
 	}
 }
 
+func TestProxyBypassRulesAreNotExposed(t *testing.T) {
+	profile := map[string]any{"id": testContainerID, "name": "Local Proxy", "enabled": true, "protocol": "http", "host": "127.0.0.1", "port": 8080, "bypassRules": []any{"sensitive.internal.example"}, "certificateIds": []any{}, "healthCheck": map[string]any{}, "unavailableBehavior": "block"}
+	handler := &fakeHandler{dataOverride: map[string]any{"list_proxy_profiles": []any{profile}}}
+	session, closeSession := connectClient(t, handler)
+	defer closeSession()
+	result := callTool(t, session, "scopenest_list_proxy_profiles", map[string]any{})
+	if result.IsError {
+		t.Fatalf("proxy summary failed: %#v", result.Content)
+	}
+	raw, _ := json.Marshal(result)
+	if strings.Contains(string(raw), "bypassRules") || strings.Contains(string(raw), "sensitive.internal.example") {
+		t.Fatalf("proxy bypass rules leaked: %s", raw)
+	}
+}
+
 func TestIdentityConfirmationBlocksMutation(t *testing.T) {
 	tests := []struct {
 		name, id, expected, wantCode string
@@ -407,6 +474,26 @@ func TestIdentityConfirmationBlocksMutation(t *testing.T) {
 				t.Fatalf("mutation calls = %d", mutations)
 			}
 		})
+	}
+}
+
+func TestCustomBrowserRequiresHumanLaunch(t *testing.T) {
+	custom := map[string]any{
+		"id": testContainerID, "name": "Custom", "color": "#725cff", "browserType": "custom",
+		"temporary": false, "pendingCleanup": false, "running": false, "state": "stopped",
+		"createdAt": "2026-07-18T00:00:00Z", "updatedAt": "2026-07-18T00:00:00Z", "networkMode": "direct",
+	}
+	handler := &fakeHandler{dataOverride: map[string]any{"list_containers": []any{custom}}}
+	session, closeSession := connectClient(t, handler)
+	defer closeSession()
+	result := callTool(t, session, "scopenest_launch_container", map[string]any{"id": testContainerID, "expectedName": "Custom"})
+	raw, _ := json.Marshal(result)
+	if !result.IsError || !strings.Contains(string(raw), "CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH") {
+		t.Fatalf("custom-browser launch response = %s", raw)
+	}
+	calls, cleanupCalls := handler.snapshot()
+	if len(calls) != 1 || calls[0].request.Command != "list_containers" || cleanupCalls != 1 {
+		t.Fatalf("custom-browser launch reached mutation: calls=%#v cleanup=%d", calls, cleanupCalls)
 	}
 }
 
@@ -489,7 +576,11 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 	process := &controlledProcess{pid: 4242, done: make(chan struct{})}
 	ownerHost := host.New(st, controlledLauncher{process}, nil)
 	owner := NewAdapter(ownerHost)
-	created := owner.Execute("create_container", createContainerInput{Name: "Owned", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, NetworkMode: "direct"})
+	createData, err := json.Marshal(map[string]any{"name": "Owned", "color": "#725cff", "browserType": "chrome", "browserExecutable": executable, "networkMode": "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := ownerHost.Handle(protocol.Request{Version: protocol.Version, RequestID: "human-create", Command: "create_container", Data: createData})
 	if !created.Success {
 		t.Fatalf("create: %#v", created)
 	}

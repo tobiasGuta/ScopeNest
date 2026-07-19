@@ -29,6 +29,7 @@ var safeErrorMessages = map[string]string{
 	"INVALID_URL":                           "The URL must be an absolute HTTP(S) URL without credentials.",
 	"NOT_FOUND":                             "The requested container was not found.",
 	"CONTAINER_NAME_MISMATCH":               "The expected container name does not match the current container name; no action was taken.",
+	"CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH":  "Custom-browser containers must be launched by a human through the ScopeNest extension.",
 	"PROCESS_NOT_OWNED":                     "This MCP server process does not own the container process. Close its browser window or use the ScopeNest process that launched it.",
 	"ALREADY_RUNNING":                       "The container is already running.",
 	"ALREADY_LAUNCHING":                     "The container launch is already in progress.",
