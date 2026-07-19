@@ -56,6 +56,9 @@ func normalizeLabelPart(value string) string {
 	var result strings.Builder
 	pendingSpace := false
 	for _, r := range strings.TrimSpace(value) {
+		if security.IsBidiControl(r) {
+			continue
+		}
 		if unicode.IsControl(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) || unicode.IsSpace(r) {
 			pendingSpace = result.Len() > 0
 			continue

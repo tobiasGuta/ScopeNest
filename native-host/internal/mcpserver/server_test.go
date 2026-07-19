@@ -691,7 +691,8 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 		t.Fatalf("MCP launch is missing the shared window-name argument: %#v", launchSpec.Arguments)
 	}
 
-	nonOwner := NewAdapter(host.New(st, controlledLauncher{process: &controlledProcess{pid: 9999, done: make(chan struct{})}}, nil))
+	nonOwnerHost := host.New(st, controlledLauncher{process: &controlledProcess{pid: 9999, done: make(chan struct{})}}, nil)
+	nonOwner := NewAdapter(nonOwnerHost)
 	rejected := nonOwner.ExecuteWithIdentity("close_container", container.ID, container.Name, struct {
 		ID string `json:"id"`
 	}{container.ID})
@@ -712,6 +713,8 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 		t.Fatal("owner did not terminate its process")
 	}
 	waitForStoppedContainer(t, st, container.ID)
+	waitForStartupCleanup(t, ownerHost)
+	waitForStartupCleanup(t, nonOwnerHost)
 }
 
 func TestPersistedPIDNeverGrantsCloseAuthority(t *testing.T) {

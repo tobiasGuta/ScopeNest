@@ -15,6 +15,7 @@ import (
 const (
 	visualIdentityPollInterval = 150 * time.Millisecond
 	visualIdentityTimeout      = 10 * time.Second
+	minimumDWMColorBuild       = 22000
 	initialJobPIDCapacity      = 64
 	maxJobProcessIDs           = 4096
 	errorMoreData              = syscall.Errno(234)
@@ -27,7 +28,15 @@ const (
 	dwmwaBorderColor  = 34
 	dwmwaCaptionColor = 35
 	dwmwaTextColor    = 36
+	// E_NOTIMPL is a standard HRESULT; 0x80070078 is
+	// HRESULT_FROM_WIN32(ERROR_CALL_NOT_IMPLEMENTED).
+	// https://learn.microsoft.com/windows/win32/seccrypto/common-hresult-values
+	// https://learn.microsoft.com/windows/win32/api/winerror/nf-winerror-hresult_from_win32
+	hresultNotImplemented     = 0x80004001
+	hresultCallNotImplemented = 0x80070078
 )
+
+var errDWMUnsupported = errors.New("DWM visual identity is unsupported")
 
 var (
 	user32                   = syscall.NewLazyDLL("user32.dll")
@@ -37,6 +46,8 @@ var (
 	getWindowThreadProcessID = user32.NewProc("GetWindowThreadProcessId")
 	dwmapi                   = syscall.NewLazyDLL("dwmapi.dll")
 	dwmSetWindowAttribute    = dwmapi.NewProc("DwmSetWindowAttribute")
+	ntdll                    = syscall.NewLazyDLL("ntdll.dll")
+	rtlGetVersion            = ntdll.NewProc("RtlGetVersion")
 )
 
 type jobQuery func(job uintptr, class uint32, buffer unsafe.Pointer, bufferSize uint32, returnLength *uint32) (uintptr, error)
@@ -59,7 +70,18 @@ type systemIdentityClock struct{}
 func (systemIdentityClock) now() time.Time            { return time.Now() }
 func (systemIdentityClock) sleep(delay time.Duration) { time.Sleep(delay) }
 
-type windowsIdentityAPI struct{}
+type windowsIdentityAPI struct {
+	buildNumber func() (uint32, error)
+}
+
+type rtlOSVersionInfo struct {
+	size         uint32
+	majorVersion uint32
+	minorVersion uint32
+	buildNumber  uint32
+	platformID   uint32
+	servicePack  [128]uint16
+}
 
 func startVisualIdentity(process Process, identity VisualIdentity) {
 	managed, ok := process.(*jobProcess)
@@ -73,7 +95,7 @@ func startVisualIdentity(process Process, identity VisualIdentity) {
 	go styleInitialOwnedWindow(
 		managed.Running,
 		managed.ownedProcessIDs,
-		windowsIdentityAPI{},
+		windowsIdentityAPI{buildNumber: windowsBuildNumber},
 		systemIdentityClock{},
 		color,
 	)
@@ -120,8 +142,10 @@ func styleInitialOwnedWindow(
 					}
 					// Styling is intentionally best effort and must never affect
 					// process lifetime or the launch response.
-					_ = windows.style(window, color, contrastingTextColor(color))
-					return
+					styleErr := windows.style(window, color, contrastingTextColor(color))
+					if styleErr == nil || errors.Is(styleErr, errDWMUnsupported) {
+						return
+					}
 				}
 			}
 		}
@@ -245,7 +269,18 @@ func (windowsIdentityAPI) owner(window uintptr) uintptr {
 	return result
 }
 
-func (windowsIdentityAPI) style(window uintptr, background, text rgbColor) error {
+func (api windowsIdentityAPI) style(window uintptr, background, text rgbColor) error {
+	readBuild := api.buildNumber
+	if readBuild == nil {
+		readBuild = windowsBuildNumber
+	}
+	build, err := readBuild()
+	if err != nil {
+		return err
+	}
+	if build < minimumDWMColorBuild {
+		return errDWMUnsupported
+	}
 	backgroundRef := colorRef(background)
 	if err := setDWMColor(window, dwmwaBorderColor, backgroundRef); err != nil {
 		return err
@@ -265,9 +300,33 @@ func setDWMColor(window uintptr, attribute uintptr, color uint32) error {
 		unsafe.Sizeof(color),
 	)
 	if int32(result) < 0 {
+		if isUnsupportedDWMHRESULT(uint32(result)) {
+			return fmt.Errorf("%w (HRESULT 0x%08x)", errDWMUnsupported, uint32(result))
+		}
 		return fmt.Errorf("DwmSetWindowAttribute failed with HRESULT 0x%08x", uint32(result))
 	}
 	return nil
+}
+
+func isUnsupportedDWMHRESULT(result uint32) bool {
+	switch result {
+	case hresultNotImplemented, hresultCallNotImplemented:
+		return true
+	default:
+		return false
+	}
+}
+
+func windowsBuildNumber() (uint32, error) {
+	// RtlGetVersion returns the actual running build and requires the structure
+	// size to be initialized before the call.
+	// https://learn.microsoft.com/windows/win32/devnotes/rtlgetversion
+	info := rtlOSVersionInfo{size: uint32(unsafe.Sizeof(rtlOSVersionInfo{}))}
+	status, _, _ := rtlGetVersion.Call(uintptr(unsafe.Pointer(&info)))
+	if status != 0 {
+		return 0, fmt.Errorf("RtlGetVersion failed with NTSTATUS 0x%08x", uint32(status))
+	}
+	return info.buildNumber, nil
 }
 
 func colorRef(color rgbColor) uint32 {

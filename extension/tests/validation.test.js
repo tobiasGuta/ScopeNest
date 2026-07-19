@@ -21,6 +21,22 @@ test("bounds the visual identity label without splitting Unicode code points", (
   assert.equal(label.includes("�"), false);
 });
 
+test("rejects bidi formatting controls while preserving ZWJ emoji", () => {
+  for (const value of ["Admin\u202Eresu", "User\u2066Admin\u2069", "\u200FAnonymous"]) {
+    assert.throws(() => validateContainer({ ...valid, name: value }), /bidirectional/);
+  }
+  for (const value of ["A\u202E", "\u2066A\u2069", "\u200F"]) {
+    assert.throws(() => validateContainer({ ...valid, icon: value }), /bidirectional/);
+  }
+  assert.equal(validateContainer({ ...valid, icon: "👩‍💻" }).icon, "👩‍💻");
+});
+
+test("defensively removes bidi formatting controls from preview labels", () => {
+  assert.equal(visualIdentityLabel({ name: "Admin\u202Eresu" }), "ScopeNest — Adminresu");
+  assert.equal(visualIdentityLabel({ name: "User\u2066Admin\u2069" }), "ScopeNest — UserAdmin");
+  assert.equal(visualIdentityLabel({ name: "\u200FAnonymous" }), "ScopeNest — Anonymous");
+});
+
 test("rejects invalid names, colors, icons, browsers, and paths", () => {
   assert.throws(() => validateContainer({ ...valid, name: "\u0000bad" }));
   assert.throws(() => validateContainer({ ...valid, color: "red" }));

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	HostVersion          = "1.0.4"
+	HostVersion          = "1.1.0"
 	launchReservationTTL = 2 * time.Minute
 )
 

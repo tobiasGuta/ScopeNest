@@ -2,11 +2,13 @@ export const DEFAULT_COLOR = "#725cff";
 export const MAX_WINDOW_LABEL_RUNES = 120;
 
 const labelWhitespaceOrControl = /[\p{Cc}\p{Zl}\p{Zp}\s]/u;
+const bidiControl = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 function normalizeWindowLabelPart(value) {
   let result = "";
   let pendingSpace = false;
   for (const rune of String(value || "").trim()) {
+    if (bidiControl.test(rune)) continue;
     if (labelWhitespaceOrControl.test(rune)) {
       pendingSpace = result.length > 0;
       continue;
@@ -38,8 +40,10 @@ export function validateContainer(input) {
     environmentTemplateId: typeof input?.environmentTemplateId === "string" ? input.environmentTemplateId : undefined,
   };
   if (!value.name || [...value.name].length > 80 || /[\u0000-\u001f\u007f]/.test(value.name)) throw new Error("Name must contain 1–80 visible characters.");
+  if (bidiControl.test(value.name)) throw new Error("Name cannot contain bidirectional formatting characters.");
   if (!/^#[0-9a-fA-F]{6}$/.test(value.color)) throw new Error("Choose a valid color.");
   if ([...value.icon].length > 8 || /[\u0000-\u001f\u007f]/.test(value.icon)) throw new Error("Icon must contain at most 8 visible characters.");
+  if (bidiControl.test(value.icon)) throw new Error("Icon cannot contain bidirectional formatting characters.");
   if (!["chrome", "chromium", "edge", "brave", "custom"].includes(value.browserType)) throw new Error("Choose a supported browser.");
   if (!value.browserExecutable) throw new Error("Choose a browser executable.");
   if (!["direct", "template", "proxy"].includes(value.networkMode)) throw new Error("Invalid network mode.");

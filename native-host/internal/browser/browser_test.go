@@ -57,6 +57,19 @@ func TestWindowLabelDefensivelyRemovesControlsAndExcludesLaunchMetadata(t *testi
 	}
 }
 
+func TestWindowLabelDefensivelyRemovesBidiFormattingControls(t *testing.T) {
+	tests := map[string]string{
+		"Admin\u202Eresu":       "ScopeNest — Adminresu",
+		"User\u2066Admin\u2069": "ScopeNest — UserAdmin",
+		"\u200FAnonymous":       "ScopeNest — Anonymous",
+	}
+	for value, expected := range tests {
+		if actual := WindowLabel(VisualIdentity{Name: value}); actual != expected {
+			t.Fatalf("WindowLabel(%q) = %q, want %q", value, actual, expected)
+		}
+	}
+}
+
 func TestArgumentsIncludeOneSeparatedWindowName(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "profile")
 	identity := VisualIdentity{Name: "Research --remote-debugging-port=9222", Color: "#123456", Icon: "🔬"}

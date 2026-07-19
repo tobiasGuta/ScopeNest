@@ -33,6 +33,7 @@ type fakeWindowAPI struct {
 	windows     map[uintptr]fakeWindow
 	styleCalls  []uintptr
 	styleError  error
+	styleErrors map[uintptr]error
 	appearAfter int
 	enumerated  int
 }
@@ -55,6 +56,9 @@ func (f *fakeWindowAPI) isVisible(window uintptr) bool { return f.windows[window
 func (f *fakeWindowAPI) owner(window uintptr) uintptr  { return f.windows[window].owner }
 func (f *fakeWindowAPI) style(window uintptr, _, _ rgbColor) error {
 	f.styleCalls = append(f.styleCalls, window)
+	if err, ok := f.styleErrors[window]; ok {
+		return err
+	}
 	return f.styleError
 }
 
@@ -121,11 +125,11 @@ func TestInitialWindowSelectionUsesOnlyCurrentJobMembership(t *testing.T) {
 	}
 }
 
-func TestInitialWindowStylingFailureIsNonFatalAndNotRetried(t *testing.T) {
+func TestInitialWindowStylingStopsOnConfirmedUnsupportedDWM(t *testing.T) {
 	windows := &fakeWindowAPI{
 		order:      []uintptr{7},
 		windows:    map[uintptr]fakeWindow{7: {pid: 700, visible: true}},
-		styleError: errors.New("DWM unavailable"),
+		styleError: errDWMUnsupported,
 	}
 	clock := &fakeIdentityClock{current: time.Unix(0, 0)}
 	styleInitialOwnedWindow(
@@ -136,7 +140,47 @@ func TestInitialWindowStylingFailureIsNonFatalAndNotRetried(t *testing.T) {
 		rgbColor{},
 	)
 	if len(windows.styleCalls) != 1 || clock.sleeps != 0 {
-		t.Fatalf("style calls = %#v, sleeps = %d; want one best-effort attempt", windows.styleCalls, clock.sleeps)
+		t.Fatalf("style calls = %#v, sleeps = %d; want one confirmed-unsupported attempt", windows.styleCalls, clock.sleeps)
+	}
+}
+
+func TestInitialWindowStylingContinuesAfterTransientFailure(t *testing.T) {
+	windows := &fakeWindowAPI{
+		order:       []uintptr{7, 8},
+		windows:     map[uintptr]fakeWindow{7: {pid: 700, visible: true}, 8: {pid: 800, visible: true}},
+		styleErrors: map[uintptr]error{7: errors.New("transient invalid window")},
+	}
+	clock := &fakeIdentityClock{current: time.Unix(0, 0)}
+	styleInitialOwnedWindow(
+		func() bool { return true },
+		func() (map[uint32]struct{}, error) { return map[uint32]struct{}{700: {}, 800: {}}, nil },
+		windows,
+		clock,
+		rgbColor{},
+	)
+	if len(windows.styleCalls) != 2 || windows.styleCalls[0] != 7 || windows.styleCalls[1] != 8 || clock.sleeps != 0 {
+		t.Fatalf("style calls = %#v, sleeps = %d; want transient failure followed by success", windows.styleCalls, clock.sleeps)
+	}
+}
+
+func TestUnsupportedDWMHRESULTsAreDistinguished(t *testing.T) {
+	for _, result := range []uint32{hresultNotImplemented, hresultCallNotImplemented} {
+		if !isUnsupportedDWMHRESULT(result) {
+			t.Fatalf("HRESULT %#08x was not recognized as unsupported", result)
+		}
+	}
+	for _, result := range []uint32{0x80070006, 0x80070057} {
+		if isUnsupportedDWMHRESULT(result) {
+			t.Fatalf("transient HWND/argument HRESULT %#08x was classified as unsupported", result)
+		}
+	}
+}
+
+func TestWindowsIdentityAPIStopsBeforeDWMOnUnsupportedBuild(t *testing.T) {
+	api := windowsIdentityAPI{buildNumber: func() (uint32, error) { return minimumDWMColorBuild - 1, nil }}
+	err := api.style(1, rgbColor{}, rgbColor{})
+	if !errors.Is(err, errDWMUnsupported) {
+		t.Fatalf("style error = %v, want confirmed unsupported result", err)
 	}
 }
 

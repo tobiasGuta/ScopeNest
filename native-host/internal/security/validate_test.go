@@ -86,6 +86,27 @@ func TestInputValidation(t *testing.T) {
 	}
 }
 
+func TestNamesAndIconsRejectBidiFormattingControls(t *testing.T) {
+	values := []string{
+		"Admin\u202Eresu",
+		"User\u2066Admin\u2069",
+		"\u200FAnonymous",
+	}
+	for _, value := range values {
+		if err := ValidateName(value); err == nil {
+			t.Errorf("ValidateName accepted bidi-formatted value %q", value)
+		}
+	}
+	for _, value := range []string{"A\u202E", "\u2066A\u2069", "\u200F"} {
+		if err := ValidateIcon(value); err == nil {
+			t.Errorf("ValidateIcon accepted bidi-formatted value %q", value)
+		}
+	}
+	if err := ValidateIcon("👩‍💻"); err != nil {
+		t.Fatalf("rejected ZWJ emoji sequence: %v", err)
+	}
+}
+
 func TestBrowserExecutableRejectsUnrelatedPrograms(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cmd")

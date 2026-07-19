@@ -66,6 +66,9 @@ func ValidateName(name string) error {
 		if r < 0x20 || r == 0x7f {
 			return errors.New("container name contains control characters")
 		}
+		if IsBidiControl(r) {
+			return errors.New("container name contains bidirectional formatting characters")
+		}
 	}
 	return nil
 }
@@ -85,8 +88,27 @@ func ValidateIcon(icon string) error {
 		if r < 0x20 || r == 0x7f {
 			return errors.New("icon contains control characters")
 		}
+		if IsBidiControl(r) {
+			return errors.New("icon contains bidirectional formatting characters")
+		}
 	}
 	return nil
+}
+
+// IsBidiControl identifies directional formatting characters that can make a
+// trusted visual label appear in a different order. It intentionally does not
+// reject all Cf characters because emoji sequences commonly require U+200D.
+func IsBidiControl(r rune) bool {
+	switch {
+	case r == '\u061c', r == '\u200e', r == '\u200f':
+		return true
+	case r >= '\u202a' && r <= '\u202e':
+		return true
+	case r >= '\u2066' && r <= '\u2069':
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidateBrowserType(browserType string) error {
