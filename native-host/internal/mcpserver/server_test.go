@@ -134,6 +134,39 @@ func (f *fakeHandler) snapshot() ([]recordedCall, int) {
 	return append([]recordedCall(nil), f.calls...), f.cleanupCalls
 }
 
+func waitForStartupCleanup(t *testing.T, nativeHost *host.Host) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		response := nativeHost.Handle(protocol.Request{Version: protocol.Version, RequestID: "cleanup-status", Command: "ping"})
+		if !response.Success {
+			t.Fatalf("startup cleanup status failed: %#v", response)
+		}
+		raw, err := json.Marshal(response.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status struct {
+			StartupCleanup struct {
+				State string `json:"state"`
+			} `json:"startupCleanup"`
+		}
+		if err := json.Unmarshal(raw, &status); err != nil {
+			t.Fatal(err)
+		}
+		switch status.StartupCleanup.State {
+		case "completed":
+			return
+		case "failed":
+			t.Fatal("startup cleanup failed")
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for startup cleanup; state=%q", status.StartupCleanup.State)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func connectClient(t *testing.T, handler CommandHandler) (*mcp.ClientSession, func()) {
 	t.Helper()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -661,11 +694,13 @@ func TestPersistedPIDNeverGrantsCloseAuthority(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(host.New(st, nil, nil))
+	nativeHost := host.New(st, nil, nil)
+	adapter := NewAdapter(nativeHost)
 	response := adapter.ExecuteWithIdentity("close_container", testContainerID, "Persisted", struct {
 		ID string `json:"id"`
 	}{testContainerID})
 	if response.Success || response.ErrorCode != "PROCESS_NOT_OWNED" {
 		t.Fatalf("persisted PID granted authority: %#v", response)
 	}
+	waitForStartupCleanup(t, nativeHost)
 }
