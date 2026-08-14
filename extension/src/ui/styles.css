@@ -63,6 +63,8 @@ input::placeholder { color: #9893aa; }
 .badge.running { color: #16745a; background: var(--mint-soft); }.badge.running::before { content: ""; width: 6px; height: 6px; background: var(--mint); border-radius: 50%; }
 .badge.launching { color: #4b36c8; background: var(--brand-soft); }.badge.launching::before { content: ""; width: 7px; height: 7px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .badge.temporary { background: #fff4d9; color: #805f08; }
+.badge.automation { background: #e9e7ff; color: #4933c8; }
+.badge.automation.disabled { background: #efedf3; color: #696474; }
 .card-menu { border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 5px 8px; font-size: 18px; }.card-menu:hover { background: var(--canvas); }
 .certificate-card .card-head { align-items: center; }
 .certificate-card .card-icon { font-size: 12px; font-weight: 800; letter-spacing: 0; color: #9f1d4a; }
@@ -90,6 +92,7 @@ dialog label { display: grid; gap: 5px; margin-bottom: 12px; color: #4b465e; fon
 .identity-preview output { display: block; overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .identity-preview-help { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.35; }
 .checkbox { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 8px; }.checkbox input { width: auto; min-height: auto; }
+.automation-setting { align-items: flex-start; padding: 10px; border: 1px solid #dcd7f5; border-radius: 10px; background: #f7f6ff; }.automation-setting span { display: grid; gap: 4px; }.automation-setting small { color: var(--muted); font-weight: 400; line-height: 1.35; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 17px; }.form-error { padding: 9px; margin: 0; border-radius: 8px; color: var(--danger); background: var(--danger-soft); font-size: 12px; }
 .confirm-dialog { text-align: center; }.danger-icon { width: 44px; height: 44px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 50%; color: var(--danger); background: var(--danger-soft); font-size: 22px; font-weight: 800; }.confirm-dialog p { color: var(--muted); }.confirm-dialog .dialog-actions { justify-content: center; }
 .toast-region { position: fixed; z-index: 10; right: 12px; bottom: 12px; display: grid; gap: 7px; pointer-events: none; }.toast { max-width: 350px; padding: 10px 13px; border-radius: 10px; color: white; background: #211c3b; box-shadow: var(--shadow); font-size: 12px; animation: toast-in .18s ease-out; }.toast.error { background: var(--danger); } @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/target"
 	"github.com/scopenest/scopenest/native-host/internal/browser"
 	"github.com/scopenest/scopenest/native-host/internal/certstore"
 	"github.com/scopenest/scopenest/native-host/internal/model"
@@ -346,6 +347,80 @@ func TestCreateContainerAndPersistMetadata(t *testing.T) {
 	db, _ := st.Load()
 	if len(db.Containers) != 1 || db.Containers[0].ID != c.ID {
 		t.Fatalf("container not persisted: %#v", db)
+	}
+}
+
+func TestAutomationConfigurationPersistsAndCustomBrowserIsRejected(t *testing.T) {
+	h, st, executable := testHost(t)
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Automated", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, AutomationEnabled: true}))
+	if created.Success || created.ErrorCode != "AUTOMATION_REQUIRES_STANDARD_BROWSER" {
+		t.Fatalf("custom automation response = %#v", created)
+	}
+	created = h.Handle(request(t, "create_container", containerInput{Name: "Automated", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !created.Success {
+		t.Fatalf("standard automation create failed: %#v", created)
+	}
+	db, err := st.Load()
+	if err != nil || len(db.Containers) != 1 || !db.Containers[0].AutomationEnabled {
+		t.Fatalf("automation setting was not persisted: db=%#v err=%v", db, err)
+	}
+}
+
+func TestAutomationInitializationFailureTerminatesProcessAndRollsBackReservation(t *testing.T) {
+	h, st, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
+	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
+		return nil, errors.New("test initialization failure")
+	}
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Automation failure", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !created.Success {
+		t.Fatalf("automation container create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID}))
+	if response.Success || response.ErrorCode != "AUTOMATION_INITIALIZATION_FAILED" {
+		t.Fatalf("automation failure response = %#v", response)
+	}
+	waitForSignal(t, process.terminated, "failed automation process termination")
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := db.Containers[0]; got.State != model.StateStopped || got.Running || got.PID != 0 || got.LaunchToken != "" || got.LaunchReservedAt != nil {
+		t.Fatalf("automation failure did not roll back launch reservation: %#v", got)
+	}
+}
+
+func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
+	h, _, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
+		return &automationRuntime{cancel: func() { closeOnce.Do(func() { close(closed) }) }, pages: map[string]target.ID{}}, nil
+	}
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Automation close", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !created.Success {
+		t.Fatalf("automation container create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	if response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID})); !response.Success {
+		t.Fatalf("automation launch failed: %#v", response)
+	}
+	if response := h.BrowserStatusForMCP(container.ID, "Different name"); response.Success || response.ErrorCode != "CONTAINER_NAME_MISMATCH" {
+		t.Fatalf("browser action accepted stale container identity: %#v", response)
+	}
+	if response := h.Handle(request(t, "close_container", idInput{ID: container.ID})); !response.Success {
+		t.Fatalf("automation close failed: %#v", response)
+	}
+	waitForSignal(t, closed, "automation runtime cancellation")
+	h.mu.Lock()
+	runtime := h.automations[container.ID]
+	h.mu.Unlock()
+	if runtime != nil {
+		t.Fatal("closed automation runtime remained addressable")
 	}
 }
 

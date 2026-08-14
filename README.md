@@ -6,6 +6,37 @@ ScopeNest is a local Chrome Manifest V3 extension and Go native-messaging compan
 
 Each saved or temporary container opens as a separate browser window backed by its own profile directory. Cookies, local storage, IndexedDB, cache, service workers, authentication sessions, history, permissions, and profile settings are therefore separated by the browser itself.
 
+## Quick start
+
+These steps install the unpacked development build for the current user. Run all commands from the repository root.
+
+1. Install [Go 1.25 or newer](https://go.dev/dl/) and a supported Chromium-family browser. Node.js 20 or newer is needed only for repository checks and asset generation.
+2. Open `chrome://extensions` (or `edge://extensions`), enable **Developer mode**, choose **Load unpacked**, and select the repository's `extension` directory.
+3. Install and register the native companion for the extension's pinned development ID:
+
+   Windows PowerShell:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -ExtensionId nnmpnmnmmfoedjeionoopgnbjnepfolh
+   ```
+
+   Linux:
+
+   ```bash
+   chmod +x scripts/install-linux.sh scripts/uninstall-linux.sh
+   ./scripts/install-linux.sh nnmpnmnmmfoedjeionoopgnbjnepfolh
+   ```
+
+4. Fully close and restart the browser, pin or open ScopeNest from the toolbar, and confirm the popup or side panel loads without a native-host error.
+5. Create a named or temporary container, choose a detected browser and network mode, then select **Launch**, **Current page**, or enter an HTTP(S) URL. The isolated browser window is the running container; no separate ScopeNest application or daemon needs to be started.
+
+For agent control, choose one integration:
+
+- Install and register [`scopenest-mcp`](docs/MCP.md) for ScopeNest's bounded, container-scoped automation tools. Enable **Allow local agent/browser automation** only on containers that this MCP server should control.
+- On Windows with Google Chrome, use the optional [ChatGPT Chrome-control setup](docs/CHATGPT-CONTROL.md) to make the official browser-control extension available inside isolated profiles. This is independent of ScopeNest MCP automation.
+
+The detailed build, prebuilt-binary, packaged-extension, removal, and troubleshooting instructions remain below.
+
 ## Why a native companion is necessary
 
 Chrome does not expose Firefox's `contextualIdentities` API, and an extension cannot create arbitrary cookie stores for ordinary tabs. Swapping cookies would be incomplete and unsafe because modern session state also lives in storage, service workers, cache, and browser-managed databases. ScopeNest does not imitate isolation inside one window. It launches a browser with:
@@ -19,6 +50,28 @@ Chrome does not expose Firefox's `contextualIdentities` API, and an extension ca
 
 No shell is involved. The Go host passes every argument separately to the operating system.
 
+### Optional ChatGPT control of isolated Chrome profiles on Windows
+
+Chrome extensions are installed per profile, so the ChatGPT browser-control extension in Chrome's ordinary `Default` profile is not automatically present in a ScopeNest profile. Current branded Google Chrome releases also reject command-line unpacked-extension loading. ScopeNest therefore provides an explicit, reversible setup script that uses Chrome's supported per-user `ExtensionSettings` policy to normally install the official Chrome Web Store extension in every Chrome profile, including isolated ScopeNest profiles:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable-chatgpt-control-windows.ps1
+```
+
+The script merges one allowlisted Web Store extension entry into `HKCU\Software\Policies\Google\Chrome\ExtensionSettings`; it refuses to overwrite malformed policy data. The `normal_installed` mode installs the extension without a prompt while still allowing the user to disable it. Because Chrome policy is browser-wide, this opt-in also applies to non-ScopeNest Chrome profiles for the same Windows user.
+
+Close every Chrome window before enabling the policy. Then launch a ScopeNest container that uses Google Chrome, confirm the ChatGPT extension is enabled in that isolated profile, and select Chrome through the ChatGPT browser-control plugin. Repeat only the container-launch step for additional isolated profiles. Distinct container names, colors, and icons make concurrent profiles easier to identify.
+
+This Chrome-extension path does not require **Allow local agent/browser automation** and does not use `scopenest-mcp`. Enable that container setting only if you also intend to use ScopeNest's own MCP browser tools. See [docs/CHATGPT-CONTROL.md](docs/CHATGPT-CONTROL.md) for the complete setup, verification, multi-container, troubleshooting, security, and removal procedure.
+
+To remove only the policy entry added by ScopeNest while preserving unrelated extension policy entries:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\disable-chatgpt-control-windows.ps1
+```
+
+Removing the policy does not delete container data. Chrome may retain an already-installed, user-disableable extension until it is removed from `chrome://extensions`.
+
 ## Features
 
 - Create, edit, duplicate, search, filter, sort, and permanently delete named contexts.
@@ -30,8 +83,8 @@ No shell is involved. The Go host passes every argument separately to the operat
 - Use the polished action popup or the wider Chrome side panel.
 - Detect Chrome, Chromium, Edge, and Brave on Windows and Linux, with a custom executable option.
 - Keep preferences in `chrome.storage.local` and authoritative container metadata in the local host.
-- Operate with no analytics, advertising, telemetry, external service, or page-content access.
-- Offer a separate provider-neutral local `stdio` MCP server for a deliberately limited set of container operations.
+- Keep the base ScopeNest runtime free of analytics, advertising, telemetry, external services, and extension page-content access; the optional ChatGPT-control policy installs the separately permissioned official extension from its browser store.
+- Offer a separate provider-neutral local `stdio` MCP server for deliberately limited container and explicitly opted-in browser operations.
 
 ## Architecture
 
@@ -105,7 +158,7 @@ mkdir -p bin
 
 ## MCP integration
 
-`scopenest-mcp` is an optional, separate local process for Codex Desktop and other standards-compliant MCP clients. It uses MCP over stdin/stdout only and delegates every operation to the same `host.Host` validation, store, browser, certificate, locking, reservation, and process-ownership implementation used by the extension. It exposes no page-content, cookie, arbitrary-command, trust-changing, deletion, proxy-mutation, or template-mutation tool. The MCP client may still send sanitized tool arguments and results to its model provider.
+`scopenest-mcp` is an optional, separate local process for Codex Desktop and other standards-compliant MCP clients. It uses MCP over stdin/stdout only and delegates every operation to the same `host.Host` validation, store, browser, certificate, locking, reservation, and process-ownership implementation used by the extension. Containers default to human-only. When **Allow local agent/browser automation** is explicitly enabled for a detected standard Chromium browser, ScopeNest launches that one isolated profile with Chromium's loopback-only ephemeral DevTools endpoint and exposes bounded, container-scoped MCP page actions. It never exposes raw CDP, cookies, arbitrary commands, arguments, trust changes, deletion, proxy/template mutation, or profile paths. The MCP client may still send page content and other tool results to its model provider.
 
 See [docs/MCP.md](docs/MCP.md) for the exact tools, build/install commands, Codex registration, model-provider privacy boundary, and separate-process ownership limitations.
 
@@ -176,6 +229,12 @@ Do not add wildcards. If a signed package should retain the development ID, reta
 3. Use a different container for each role. Every container gets a cryptographically random internal ID and a separate profile path.
 4. Close the isolated browser window normally. Running state is reconciled automatically.
 5. Use **Temporary** for a fresh disposable context. Its profile is removed on process exit when files are no longer held open; otherwise cleanup is marked pending and retried.
+
+### Optional local automation
+
+Enable **Allow local agent/browser automation** only for a container whose authenticated browser session you intend a local agent such as Codex to control. ScopeNest keeps each container's unique `--user-data-dir`; User A, User B, and Anonymous therefore keep separate cookies, storage, caches, service workers, and browser session state. On an automation-enabled launch ScopeNest internally requests `--remote-debugging-port=0`; desktop Chromium binds its DevTools server only to IPv4/IPv6 loopback. ScopeNest reads the fresh `DevToolsActivePort` file only from that managed profile and keeps the endpoint in memory. The port is not persisted or returned by MCP.
+
+The local `scopenest-mcp` browser tools require both the container ID and exact current name, then use opaque page IDs scoped to that one container. Start by calling `scopenest_browser_status`, then `scopenest_browser_list_pages`, `scopenest_browser_open_page`, and the bounded snapshot/click/type/key/screenshot tools. Closing the owned browser clears the in-memory automation state; the next launch receives a different endpoint. Disable the setting and relaunch to return to human-only behavior. Do not use automation-enabled containers for systems you are not authorized to access.
 
 Duplicate copies only the visible configuration (name, color, icon, and browser selection). It intentionally creates a fresh empty profile and never copies cookies or profile databases.
 

@@ -41,6 +41,7 @@ export function initContainers(state, refreshApp) {
     if (container.running) { const running = document.createElement("span"); running.className = "badge running"; running.textContent = "Running"; meta.append(running); }
     if (launching) { const launchingBadge = document.createElement("span"); launchingBadge.className = "badge launching"; launchingBadge.textContent = "Launching"; meta.append(launchingBadge); }
     if (container.temporary) { const temporary = document.createElement("span"); temporary.className = "badge temporary"; temporary.textContent = container.pendingCleanup ? "Cleanup pending" : "Temporary"; meta.append(temporary); }
+    const automation = document.createElement("span"); automation.className = `badge automation${container.automationEnabled ? "" : " disabled"}`; automation.textContent = container.automationEnabled ? "Automation enabled" : "Human only"; meta.append(automation);
     
     title.append(meta); head.append(icon, title);
     
@@ -121,6 +122,7 @@ export function initContainers(state, refreshApp) {
     $("#color").value = container?.color || (isTemp ? "#d28b26" : "#725cff"); $("#icon").value = container?.icon || (isTemp ? "⚡" : "");
     updateVisualIdentityPreview();
     $("#launch-after").checked = isTemp; $("#launch-after").closest("label").hidden = isTemp;
+    $("#automation-enabled").checked = container?.automationEnabled === true;
     
     // Fill network mode
     $("#network-mode").value = container?.networkMode || "direct";
@@ -169,7 +171,8 @@ export function initContainers(state, refreshApp) {
         browserType, browserExecutable: selectedPath || $("#browser-path").value,
         networkMode: $("#network-mode").value,
         proxyProfileId: $("#proxy-profile").value,
-        environmentTemplateId: $("#environment-template").value
+        environmentTemplateId: $("#environment-template").value,
+        automationEnabled: $("#automation-enabled").checked
       });
       const id = $("#container-id").value, temporary = $("#temporary").value === "true";
       $("#save").disabled = true;
@@ -192,7 +195,8 @@ export function initContainers(state, refreshApp) {
         browserExecutable: container.browserExecutable,
         networkMode: container.networkMode || "direct",
         proxyProfileId: container.proxyProfileId,
-        environmentTemplateId: container.environmentTemplateId
+        environmentTemplateId: container.environmentTemplateId,
+        automationEnabled: container.automationEnabled === true
       });
       await request("create_container", containerCommandData(input));
       toast("Container duplicated with a fresh profile.");

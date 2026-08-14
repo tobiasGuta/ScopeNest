@@ -118,6 +118,10 @@ type Container struct {
 	NetworkMode           string              `json:"networkMode"`
 	ProxyWarning          *ProxyLaunchWarning `json:"proxyWarning,omitempty"`
 	DirectFallbackUsed    bool                `json:"directFallbackUsed,omitempty"`
+	// AutomationEnabled is durable, explicit configuration only. The active
+	// DevTools endpoint belongs to the currently owned browser process and is
+	// intentionally kept out of persisted metadata.
+	AutomationEnabled bool `json:"automationEnabled"`
 }
 
 type Database struct {

@@ -1,6 +1,19 @@
 # ScopeNest MCP
 
-ScopeNest includes an optional provider-neutral Model Context Protocol server, `scopenest-mcp`. A local MCP client can create, inspect, launch, and close a deliberately limited set of ScopeNest browser containers. The server cannot operate pages inside those browsers.
+ScopeNest includes an optional provider-neutral Model Context Protocol server, `scopenest-mcp`. A local MCP client can create, inspect, launch, and close a deliberately limited set of ScopeNest browser containers. For an explicitly automation-enabled container, the same local process also provides bounded, container-scoped page operations.
+
+This is not the ChatGPT Chrome-control plugin. ScopeNest MCP uses an ephemeral loopback DevTools endpoint owned by `scopenest-mcp` and requires **Allow local agent/browser automation** on the container. The optional Windows [ChatGPT Chrome-control setup](CHATGPT-CONTROL.md) instead installs the official browser-control extension in each isolated Google Chrome profile and does not require that container setting.
+
+## Quick start
+
+1. Install the ScopeNest extension and native host using the [README quick start](../README.md#quick-start).
+2. Install `scopenest-mcp` with the appropriate per-user installer below.
+3. Register the installed executable with Codex or another local stdio MCP client. Do not launch or double-click the MCP executable directly; the client starts it and communicates over stdin/stdout.
+4. Restart the MCP client and call `scopenest_ping` to verify the connection.
+5. Create or edit a standard-browser container with **Allow local agent/browser automation** enabled, then use the MCP server to launch that container. The MCP process can control and close only browser processes that the same running MCP process launched.
+6. Call `scopenest_browser_status`, list that container's pages, and use only the returned container-scoped page IDs for subsequent actions.
+
+The detailed build, installation, registration, tool, ownership, privacy, and troubleshooting information follows.
 
 ## Architecture and security boundary
 
@@ -15,21 +28,26 @@ host.Host
         | existing validation and ownership controls
         v
 locked store / browser launcher / certificate manager
+        |
+        +-- opted-in owned Chromium -> ephemeral loopback CDP
 ```
 
 The MCP executable initializes the same data directory, store migrations, certificate manager, browser launcher, and long-lived `host.Host` used by `scopenest-host`. MCP inputs are strictly decoded by the MCP layer and mapped through a separate allowlist. Ordinary commands pass through `Host.Handle`; launch uses the dedicated `Host.LaunchForMCP` path so MCP-only launch restrictions remain inside the host's launch-reservation transaction. There is no generic command tool or remotely supplied launch-policy argument.
 
-Extension and MCP launches use the same typed browser launch specification. The current reserved container record supplies its validated name, color, and icon; the shared browser layer adds the bounded Chromium window name and, on Windows, performs Job Object-owned best-effort native styling of the initial window. This adds no MCP tool, argument, listener, browser-page access, or extension communication path. It neither reads page content nor alters the tested web application.
+Extension and MCP launches use the same typed browser launch specification. The current reserved container record supplies its validated name, color, icon, and automation choice; the shared browser layer adds only ScopeNest-generated arguments. Human-only containers receive no remote-debugging flag. An opted-in standard-browser container receives fixed `--remote-debugging-port=0` beside its already unique managed `--user-data-dir`; desktop Chromium's DevTools socket factory binds only to IPv4/IPv6 loopback.
+
+The host removes any stale managed `DevToolsActivePort`, launches through the existing owned-process path, waits boundedly for a fresh regular file under that validated profile, strictly validates the ephemeral port and browser WebSocket path, and establishes its own bounded CDP client. If this fails, launch is rolled back and the owned process is terminated. The endpoint, CDP context, and opaque page references are runtime state only; none is persisted or returned by MCP. Each runtime is keyed by container ID, and every page operation also requires the exact current container name. A page ID from one container is never accepted by another.
 
 The server uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) v1.6.1 stable release and its newline-delimited JSON `StdioTransport`. It does not start HTTP, TCP, WebSocket, SSE, named-pipe, Unix-socket, or other listeners.
 
 ## What it cannot do
 
-The first MCP version cannot:
+ScopeNest MCP cannot:
 
-- browse, click, read page content, or run security tests;
-- read cookies, browser profiles, credentials, or local browsing state;
+- operate pages in a human-only or unowned browser container;
+- directly dump cookies, browser profiles, credentials, password stores, or arbitrary local browsing state;
 - execute arbitrary commands, executables, Chromium arguments, or ScopeNest commands;
+- execute arbitrary CDP methods or arbitrary JavaScript;
 - delete or update containers;
 - create, update, or delete proxy profiles or environment templates;
 - import, delete, install, remove, or acknowledge certificate trust;
@@ -41,7 +59,7 @@ Use launch operations only for systems you own or are authorized to test.
 
 ## Model-provider privacy boundary
 
-ScopeNest MCP runs locally, but the selected MCP client may transmit tool names, arguments, and sanitized results to its model provider. Container names, proxy names and listener metadata, template names and descriptions, certificate IDs, browser types, and running-state metadata may therefore leave the device. ScopeNest excludes proxy bypass rules from MCP summaries, but other engagement-sensitive labels and infrastructure metadata remain visible to the client. Review the client's privacy, retention, and training settings before using real engagement names or confidential infrastructure details.
+ScopeNest MCP runs locally, but the selected MCP client may transmit tool names, arguments, and results to its model provider. Container names, page URLs/text/screenshots, typed values, proxy names and listener metadata, template names and descriptions, certificate IDs, browser types, and running-state metadata may therefore leave the device. ScopeNest excludes proxy bypass rules and sensitive runtime endpoints from MCP output, but authenticated page content and other engagement-sensitive data remain visible to the client when automation is used. Review the client's privacy, retention, and training settings before enabling it.
 
 The statement that ScopeNest does not directly use a cloud AI API describes the local MCP server, not the behavior of Codex, Claude, Gemini, or another MCP client.
 
@@ -118,7 +136,7 @@ codex mcp list
 codex mcp get scopenest
 ```
 
-Restart Codex Desktop after changing MCP configuration. In a new task, ask Codex to list the available ScopeNest tools or call `scopenest_ping`. Tool discovery should show exactly the 11 tools below.
+Restart Codex Desktop after changing MCP configuration. In a new task, ask Codex to list the available ScopeNest tools or call `scopenest_ping`. Tool discovery should show exactly the 20 tools below.
 
 Codex stores durable MCP configuration in its shared `config.toml`. The equivalent generic Codex TOML shape is:
 
@@ -163,8 +181,17 @@ Configuration keys and restart behavior are client-specific. ScopeNest has not b
 | `scopenest_create_temporary_container` | `create_temporary_container` | Create a disposable profile cleaned after safe owned-process exit |
 | `scopenest_launch_container` | `launch_container` | Identity-confirmed browser launch at an optional HTTP(S) URL |
 | `scopenest_close_container` | `close_container` | Identity-confirmed close, limited to this MCP process's owned process tree |
+| `scopenest_browser_status` | bounded host method | Confirm automation readiness without exposing the endpoint |
+| `scopenest_browser_list_pages` | bounded host method | List opaque pages in one explicit container |
+| `scopenest_browser_open_page` | bounded host method | Open an HTTP(S) URL in a new page |
+| `scopenest_browser_navigate` | bounded host method | Navigate one container-scoped page |
+| `scopenest_browser_snapshot` | bounded host method | Read title, URL, and up to 20,000 text runes |
+| `scopenest_browser_click` | bounded host method | Click one bounded CSS selector |
+| `scopenest_browser_type` | bounded host method | Type up to 8192 UTF-8 bytes into a CSS selector |
+| `scopenest_browser_press_key` | bounded host method | Send one allowlisted navigation/confirmation key |
+| `scopenest_browser_screenshot` | bounded host method | Return a PNG screenshot capped at 4 MiB |
 
-Read-only tools are annotated read-only, idempotent, and closed-world. Create tools are additive, non-idempotent, and closed-world. Close is annotated destructive and closed-world. Launch is conservatively annotated destructive, non-idempotent, and open-world because opening an arbitrary HTTP(S) URL can contact an external entity and cause side effects.
+Read-only tools are annotated read-only, idempotent, and closed-world. Create and page-interaction tools are non-idempotent. Close is annotated destructive and closed-world. Launch, open-page, and navigation tools are conservatively annotated destructive, non-idempotent, and open-world because opening an HTTP(S) URL can contact an external entity and cause side effects.
 
 ### Examples
 
@@ -182,7 +209,8 @@ Create a direct Chrome container. MCP creation accepts only `chrome`, `chromium`
   "color": "#725cff",
   "icon": "A",
   "browserType": "chrome",
-  "networkMode": "direct"
+  "networkMode": "direct",
+  "automationEnabled": true
 }
 ```
 
@@ -197,6 +225,21 @@ Launch requires the exact current name as an identity and staleness check:
 ```
 
 `expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. The expected name and standard browser type are checked against the current container record while the shared store lock is held in the same transaction that creates the launch reservation. The host also validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, and duplicate-launch state.
+
+After launch, Codex controls that exact isolated identity through the same configured ScopeNest MCP server; no second server or dynamic MCP reconfiguration is needed:
+
+```text
+scopenest_browser_status({id, expectedName})
+scopenest_browser_list_pages({id, expectedName})
+scopenest_browser_open_page({id, expectedName, url})
+scopenest_browser_snapshot({id, expectedName, pageId})
+scopenest_browser_click({id, expectedName, pageId, selector})
+scopenest_browser_type({id, expectedName, pageId, selector, text})
+```
+
+Repeat the calls with User B's different container ID/name to operate its different managed profile. Page IDs are opaque runtime references and remain valid only for the container/runtime that issued them. Closing the browser clears them. Disable `automationEnabled` in the ScopeNest UI and relaunch to remove remote-debugging behavior.
+
+This bridge is intentionally separate from Chrome DevTools MCP. Chrome's official server can attach to one existing browser selected by its startup `--browser-url` or `--ws-endpoint`; Codex's local MCP configuration is loaded when the server starts and configuration changes require a restart. That static connection model does not provide deterministic A/B endpoint switching in one running Codex session. ScopeNest therefore retains the ephemeral endpoint internally and exposes its own bounded tools. See [Chrome DevTools MCP connection configuration](https://developer.chrome.com/docs/devtools/agents/get-started/configuration), [Chrome 136 remote-debugging data-directory requirements](https://developer.chrome.com/blog/remote-debugging-port), and [OpenAI's Codex MCP configuration](https://developers.openai.com/codex/extend/mcp).
 
 Containers configured with `browserType: "custom"` through the human-operated extension cannot be launched by MCP and return `CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH`. Launch them explicitly through the extension instead.
 
@@ -253,6 +296,10 @@ Install a supported Chromium-family browser. Standard `chrome`, `chromium`, `edg
 ### `PROCESS_NOT_OWNED`
 
 The browser was launched by the extension, another MCP server process, or an earlier owner process. Close the browser window normally. Do not use a persisted PID as kill authority.
+
+### `AUTOMATION_INITIALIZATION_FAILED`
+
+ScopeNest closed the just-launched browser because its ephemeral DevTools endpoint did not become ready within the bounded startup window. A managed Chrome installation can intentionally disable this capability with the [`RemoteDebuggingAllowed`](https://chromeenterprise.google/policies/remote-debugging-allowed/) enterprise policy; ScopeNest does not bypass that policy. Disable automation for the container or ask the device administrator whether local remote debugging is permitted.
 
 ### `PROXY_LISTENER_UNAVAILABLE` or readiness warnings
 

@@ -63,6 +63,7 @@ type ArgumentOptions struct {
 	URL         string
 	Proxy       ProxyOptions
 	Identity    VisualIdentity
+	Automation  bool
 }
 
 func Arguments(options ArgumentOptions) ([]string, error) {
@@ -78,6 +79,12 @@ func Arguments(options ArgumentOptions) ([]string, error) {
 		"--new-window",
 		"--no-first-run",
 		"--window-name=" + WindowLabel(options.Identity),
+	}
+	if options.Automation {
+		// Ask Chromium to atomically choose an ephemeral port. The fixed
+		// desktop Chromium DevTools socket factory binds that port only on
+		// IPv4/IPv6 loopback.
+		args = append(args, "--remote-debugging-port=0")
 	}
 
 	if options.Proxy.Enabled {

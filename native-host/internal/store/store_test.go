@@ -248,6 +248,19 @@ func TestVersion1MigrationPreservesContainerFieldsAndDefaultsDirectMode(t *testi
 	}
 }
 
+func TestStoredContainerWithoutAutomationFieldDefaultsDisabled(t *testing.T) {
+	st, _ := New(t.TempDir())
+	fixture := `{"version":2,"containers":[{"id":"c1","name":"Existing","color":"#123456","temporary":false,"pendingCleanup":false,"profilePath":"C:/profile","browserType":"chrome","browserExecutable":"C:/browser.exe","running":false,"state":"stopped","networkMode":"direct"}]}`
+	writeV1Fixture(t, st, fixture)
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].AutomationEnabled {
+		t.Fatalf("missing automation field did not default safely to disabled: %#v", db.Containers)
+	}
+}
+
 func TestVersion1MigrationCreatesOneTimeBackup(t *testing.T) {
 	st, _ := New(t.TempDir())
 	original := `{"version":1,"containers":[{"id":"original"}]}`

@@ -16,6 +16,18 @@ type CommandHandler interface {
 	StartStartupCleanup()
 }
 
+type BrowserHandler interface {
+	BrowserStatusForMCP(id, expectedName string) protocol.Response
+	BrowserListPagesForMCP(id, expectedName string) protocol.Response
+	BrowserOpenPageForMCP(id, expectedName, url string) protocol.Response
+	BrowserNavigateForMCP(id, expectedName, pageID, url string) protocol.Response
+	BrowserSnapshotForMCP(id, expectedName, pageID string) protocol.Response
+	BrowserClickForMCP(id, expectedName, pageID, selector string) protocol.Response
+	BrowserTypeForMCP(id, expectedName, pageID, selector, text string) protocol.Response
+	BrowserPressKeyForMCP(id, expectedName, pageID, key string) protocol.Response
+	BrowserScreenshotForMCP(id, expectedName, pageID string) protocol.Response
+}
+
 var allowedCommands = map[string]bool{
 	"ping": true, "get_status": true, "list_containers": true,
 	"get_running_containers": true, "list_proxy_profiles": true,
@@ -27,11 +39,15 @@ var allowedCommands = map[string]bool{
 // Adapter serializes all access to one long-lived ScopeNest host instance.
 type Adapter struct {
 	handler CommandHandler
+	browser BrowserHandler
 	mu      sync.Mutex
 	cleanup sync.Once
 }
 
-func NewAdapter(handler CommandHandler) *Adapter { return &Adapter{handler: handler} }
+func NewAdapter(handler CommandHandler) *Adapter {
+	browser, _ := handler.(BrowserHandler)
+	return &Adapter{handler: handler, browser: browser}
+}
 
 func (a *Adapter) Execute(command string, data any) protocol.Response {
 	a.mu.Lock()
@@ -91,6 +107,75 @@ func (a *Adapter) LaunchForMCP(id, expectedName, url string) protocol.Response {
 	response := a.handler.LaunchForMCP(id, expectedName, url)
 	response.RequestID = requestID
 	response.Command = "launch_container"
+	a.scheduleCleanupLocked()
+	return response
+}
+
+func (a *Adapter) BrowserStatus(id, expectedName string) protocol.Response {
+	return a.browserCall("browser_status", func(handler BrowserHandler) protocol.Response { return handler.BrowserStatusForMCP(id, expectedName) })
+}
+
+func (a *Adapter) BrowserListPages(id, expectedName string) protocol.Response {
+	return a.browserCall("browser_list_pages", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserListPagesForMCP(id, expectedName)
+	})
+}
+
+func (a *Adapter) BrowserOpenPage(id, expectedName, url string) protocol.Response {
+	return a.browserCall("browser_open_page", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserOpenPageForMCP(id, expectedName, url)
+	})
+}
+
+func (a *Adapter) BrowserNavigate(id, expectedName, pageID, url string) protocol.Response {
+	return a.browserCall("browser_navigate", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserNavigateForMCP(id, expectedName, pageID, url)
+	})
+}
+
+func (a *Adapter) BrowserSnapshot(id, expectedName, pageID string) protocol.Response {
+	return a.browserCall("browser_snapshot", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserSnapshotForMCP(id, expectedName, pageID)
+	})
+}
+
+func (a *Adapter) BrowserClick(id, expectedName, pageID, selector string) protocol.Response {
+	return a.browserCall("browser_click", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserClickForMCP(id, expectedName, pageID, selector)
+	})
+}
+
+func (a *Adapter) BrowserType(id, expectedName, pageID, selector, text string) protocol.Response {
+	return a.browserCall("browser_type", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserTypeForMCP(id, expectedName, pageID, selector, text)
+	})
+}
+
+func (a *Adapter) BrowserPressKey(id, expectedName, pageID, key string) protocol.Response {
+	return a.browserCall("browser_press_key", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserPressKeyForMCP(id, expectedName, pageID, key)
+	})
+}
+
+func (a *Adapter) BrowserScreenshot(id, expectedName, pageID string) protocol.Response {
+	return a.browserCall("browser_screenshot", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserScreenshotForMCP(id, expectedName, pageID)
+	})
+}
+
+func (a *Adapter) browserCall(command string, invoke func(BrowserHandler) protocol.Response) protocol.Response {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.browser == nil {
+		return localError(command, "AUTOMATION_UNAVAILABLE", "This ScopeNest host does not support browser automation.")
+	}
+	requestID, err := newRequestID()
+	if err != nil {
+		return localError(command, "INTERNAL_ERROR", "ScopeNest could not create an internal request identifier.")
+	}
+	response := invoke(a.browser)
+	response.RequestID = requestID
+	response.Command = command
 	a.scheduleCleanupLocked()
 	return response
 }

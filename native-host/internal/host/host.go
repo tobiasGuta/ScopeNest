@@ -48,7 +48,9 @@ type Host struct {
 	store                  *store.Store
 	certManager            *certstore.Manager
 	launcher               browser.Launcher
+	automationStarter      func(string, browser.Process, time.Duration) (*automationRuntime, error)
 	processes              map[string]browser.Process
+	automations            map[string]*automationRuntime
 	watcher                func(string, browser.Process)
 	mu                     sync.Mutex
 	now                    func() time.Time
@@ -76,6 +78,7 @@ type containerInput struct {
 	NetworkMode           string `json:"networkMode,omitempty"`
 	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
 	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
+	AutomationEnabled     bool   `json:"automationEnabled"`
 }
 
 type idInput struct {
@@ -92,6 +95,7 @@ type updateInput struct {
 	NetworkMode           string `json:"networkMode,omitempty"`
 	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
 	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
+	AutomationEnabled     bool   `json:"automationEnabled"`
 }
 
 type launchInput struct {
@@ -113,7 +117,9 @@ func New(st *store.Store, launcher browser.Launcher, certManager *certstore.Mana
 		store:                  st,
 		certManager:            certManager,
 		launcher:               launcher,
+		automationStarter:      waitForAutomationEndpoint,
 		processes:              map[string]browser.Process{},
+		automations:            map[string]*automationRuntime{},
 		now:                    func() time.Time { return time.Now().UTC() },
 		platform:               runtime.GOOS,
 		proxyDial:              net.DialTimeout,
@@ -501,6 +507,9 @@ func validateContainerInput(in containerInput) (containerInput, error) {
 	if err := security.ValidateBrowserType(in.BrowserType); err != nil {
 		return in, fail("INVALID_BROWSER", "%v", err)
 	}
+	if in.AutomationEnabled && in.BrowserType == "custom" {
+		return in, fail("AUTOMATION_REQUIRES_STANDARD_BROWSER", "automation requires a detected standard Chromium-family browser")
+	}
 	if strings.TrimSpace(in.BrowserExecutable) == "" && in.BrowserType != "custom" {
 		for _, candidate := range browser.Detect() {
 			if candidate.Type == in.BrowserType {
@@ -549,7 +558,7 @@ func (h *Host) create(in containerInput, temporary bool) (model.Container, error
 		return model.Container{}, err
 	}
 	now := h.now()
-	c := model.Container{ID: id, Name: in.Name, Color: in.Color, Icon: in.Icon, CreatedAt: now, UpdatedAt: now, Temporary: temporary, ProfilePath: profile, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, State: model.StateStopped, NetworkMode: in.NetworkMode, ProxyProfileID: in.ProxyProfileID, EnvironmentTemplateID: in.EnvironmentTemplateID}
+	c := model.Container{ID: id, Name: in.Name, Color: in.Color, Icon: in.Icon, CreatedAt: now, UpdatedAt: now, Temporary: temporary, ProfilePath: profile, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, State: model.StateStopped, NetworkMode: in.NetworkMode, ProxyProfileID: in.ProxyProfileID, EnvironmentTemplateID: in.EnvironmentTemplateID, AutomationEnabled: in.AutomationEnabled}
 	if err := h.store.Update(func(db *model.Database) error {
 		if err := validateContainerReferences(db, in); err != nil {
 			return err
@@ -567,13 +576,13 @@ func (h *Host) update(in updateInput) (model.Container, error) {
 	if err := security.ValidateID(in.ID); err != nil {
 		return model.Container{}, fail("INVALID_CONTAINER_ID", "%v", err)
 	}
-	validated, err := validateContainerInput(containerInput{Name: in.Name, Color: in.Color, Icon: in.Icon, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, NetworkMode: in.NetworkMode, ProxyProfileID: in.ProxyProfileID, EnvironmentTemplateID: in.EnvironmentTemplateID})
+	validated, err := validateContainerInput(containerInput{Name: in.Name, Color: in.Color, Icon: in.Icon, BrowserType: in.BrowserType, BrowserExecutable: in.BrowserExecutable, NetworkMode: in.NetworkMode, ProxyProfileID: in.ProxyProfileID, EnvironmentTemplateID: in.EnvironmentTemplateID, AutomationEnabled: in.AutomationEnabled})
 	if err != nil {
 		return model.Container{}, err
 	}
 	var result model.Container
 	err = h.store.Update(func(db *model.Database) error {
-		if err := validateContainerReferences(db, containerInput{Name: validated.Name, Color: validated.Color, Icon: validated.Icon, BrowserType: validated.BrowserType, BrowserExecutable: validated.BrowserExecutable, NetworkMode: validated.NetworkMode, ProxyProfileID: validated.ProxyProfileID, EnvironmentTemplateID: validated.EnvironmentTemplateID}); err != nil {
+		if err := validateContainerReferences(db, containerInput{Name: validated.Name, Color: validated.Color, Icon: validated.Icon, BrowserType: validated.BrowserType, BrowserExecutable: validated.BrowserExecutable, NetworkMode: validated.NetworkMode, ProxyProfileID: validated.ProxyProfileID, EnvironmentTemplateID: validated.EnvironmentTemplateID, AutomationEnabled: validated.AutomationEnabled}); err != nil {
 			return err
 		}
 		for i := range db.Containers {
@@ -582,6 +591,7 @@ func (h *Host) update(in updateInput) (model.Container, error) {
 				c.Name, c.Color, c.Icon = validated.Name, validated.Color, validated.Icon
 				c.BrowserType, c.BrowserExecutable = validated.BrowserType, validated.BrowserExecutable
 				c.NetworkMode, c.ProxyProfileID, c.EnvironmentTemplateID = validated.NetworkMode, validated.ProxyProfileID, validated.EnvironmentTemplateID
+				c.AutomationEnabled = validated.AutomationEnabled
 				c.UpdatedAt, result = h.now(), *c
 				return nil
 			}
@@ -613,6 +623,12 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 	if err != nil {
 		releaseReservation()
 		return model.Container{}, err
+	}
+	if c.AutomationEnabled {
+		if err := removeStaleDevToolsActivePort(profile); err != nil {
+			releaseReservation()
+			return model.Container{}, fail("AUTOMATION_INITIALIZATION_FAILED", "automation endpoint could not be prepared")
+		}
 	}
 	executable, err := security.ValidateBrowserExecutable(c.BrowserExecutable, c.BrowserType)
 	if err != nil {
@@ -653,6 +669,7 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 		URL:         validatedURL,
 		Proxy:       proxyOpts,
 		Identity:    identity,
+		Automation:  c.AutomationEnabled,
 	})
 	if err != nil {
 		releaseReservation()
@@ -667,8 +684,21 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 		releaseReservation()
 		return model.Container{}, fail("LAUNCH_FAILED", "browser could not be started: %v", err)
 	}
+	var automation *automationRuntime
+	if c.AutomationEnabled {
+		automation, err = h.automationStarter(profile, process, automationStartupTimeout)
+		if err != nil {
+			_ = process.Terminate()
+			_ = process.Wait()
+			releaseReservation()
+			return model.Container{}, fail("AUTOMATION_INITIALIZATION_FAILED", "automation endpoint did not become ready")
+		}
+	}
 	h.mu.Lock()
 	h.processes[c.ID] = process
+	if automation != nil {
+		h.automations[c.ID] = automation
+	}
 	h.mu.Unlock()
 	now := h.now()
 	var launched model.Container
@@ -693,11 +723,17 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 		}
 		return fail("NOT_FOUND", "container was not found")
 	}); err != nil {
+		var runtimeToClose *automationRuntime
 		h.mu.Lock()
 		if h.processes[c.ID] == process {
 			delete(h.processes, c.ID)
 		}
+		if runtime := h.automations[c.ID]; runtime == automation {
+			delete(h.automations, c.ID)
+			runtimeToClose = runtime
+		}
 		h.mu.Unlock()
+		runtimeToClose.close()
 		_ = process.Terminate()
 		_ = process.Wait()
 		return model.Container{}, err
@@ -823,13 +859,19 @@ func setStopped(container *model.Container, now time.Time) {
 func (h *Host) watch(id string, process browser.Process) {
 	_ = process.Wait()
 
+	var runtimeToClose *automationRuntime
 	h.mu.Lock()
 	if h.processes[id] != process {
 		h.mu.Unlock()
 		return
 	}
 	delete(h.processes, id)
+	if runtime := h.automations[id]; runtime != nil {
+		delete(h.automations, id)
+		runtimeToClose = runtime
+	}
 	h.mu.Unlock()
+	runtimeToClose.close()
 
 	temporary := false
 	_ = h.store.Update(func(db *model.Database) error {
@@ -863,19 +905,26 @@ func (h *Host) close(id string) (model.Container, error) {
 	if process == nil {
 		return model.Container{}, fail("PROCESS_NOT_OWNED", "this host session did not launch the container process; close its browser window instead")
 	}
-	if err := process.Terminate(); err != nil {
-		return model.Container{}, fail("CLOSE_FAILED", "container process could not be terminated")
-	}
 	db, err := h.store.Load()
 	if err != nil {
 		return model.Container{}, err
 	}
-	for _, c := range db.Containers {
-		if c.ID == id {
-			return c, nil
+	var closing model.Container
+	found := false
+	for _, container := range db.Containers {
+		if container.ID == id {
+			closing, found = container, true
+			break
 		}
 	}
-	return model.Container{}, fail("NOT_FOUND", "container was not found")
+	if !found {
+		return model.Container{}, fail("NOT_FOUND", "container was not found")
+	}
+	if err := process.Terminate(); err != nil {
+		return model.Container{}, fail("CLOSE_FAILED", "container process could not be terminated")
+	}
+	h.clearAutomation(id)
+	return closing, nil
 }
 
 func (h *Host) delete(id string) (map[string]any, error) {

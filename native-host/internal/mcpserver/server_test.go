@@ -21,6 +21,29 @@ import (
 
 const testContainerID = "11111111111111111111111111111111"
 
+func TestBrowserOutputSanitizerDropsRuntimeInternals(t *testing.T) {
+	value, err := sanitizeData("browser_open_page", map[string]any{
+		"id": "22222222222222222222222222222222", "title": "Example", "url": "https://example.test/",
+		"endpoint": "ws://127.0.0.1:43123/devtools/browser/secret", "profilePath": "C:/secret/profile", "pid": 1234,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, `"title":"Example"`) {
+		t.Fatalf("expected safe page fields, got %s", text)
+	}
+	for _, forbidden := range []string{"endpoint", "profilePath", "pid", "secret"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("browser output leaked %q: %s", forbidden, text)
+		}
+	}
+}
+
 type recordedCall struct {
 	request protocol.Request
 	data    map[string]any
@@ -231,6 +254,15 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 		"scopenest_create_temporary_container": {false, false, false, false},
 		"scopenest_launch_container":           {false, true, false, true},
 		"scopenest_close_container":            {false, true, false, false},
+		"scopenest_browser_status":             {true, false, true, false},
+		"scopenest_browser_list_pages":         {true, false, true, false},
+		"scopenest_browser_open_page":          {false, true, false, true},
+		"scopenest_browser_navigate":           {false, true, false, true},
+		"scopenest_browser_snapshot":           {true, false, true, false},
+		"scopenest_browser_click":              {false, false, false, false},
+		"scopenest_browser_type":               {false, false, false, false},
+		"scopenest_browser_press_key":          {false, false, false, false},
+		"scopenest_browser_screenshot":         {true, false, true, false},
 	}
 	seen := map[string]bool{}
 	for tool, err := range session.Tools(context.Background(), nil) {
@@ -264,6 +296,9 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 			if _, exposed := properties["browserExecutable"]; exposed {
 				t.Errorf("tool %s exposes browserExecutable", tool.Name)
 			}
+			if automation, ok := properties["automationEnabled"].(map[string]any); !ok || automation["type"] != "boolean" {
+				t.Errorf("tool %s automationEnabled schema = %#v", tool.Name, automation)
+			}
 			browserType, ok := properties["browserType"].(map[string]any)
 			if !ok || !jsonEqual(browserType["enum"], stringsToAny(mcpBrowserTypes)) {
 				t.Errorf("tool %s browser enum = %#v", tool.Name, browserType["enum"])
@@ -287,6 +322,26 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 				t.Errorf("forbidden tool registered: %s", name)
 			}
 		}
+	}
+}
+
+func TestAutomationCreateInputIsClosedAndOptIn(t *testing.T) {
+	handler := &fakeHandler{}
+	session, closeSession := connectClient(t, handler)
+	defer closeSession()
+	args := createArgs()
+	args["automationEnabled"] = true
+	result := callTool(t, session, "scopenest_create_container", args)
+	if result.IsError {
+		t.Fatalf("valid automation opt-in rejected: %#v", result.Content)
+	}
+	calls, _ := handler.snapshot()
+	if len(calls) != 1 || calls[0].data["automationEnabled"] != true {
+		t.Fatalf("automation opt-in was not forwarded: %#v", calls)
+	}
+	invalid := callTool(t, session, "scopenest_create_container", map[string]any{"name": "Target", "color": "#725cff", "browserType": "chrome", "networkMode": "direct", "automationEnabled": true, "extraChromeArgs": []string{"--remote-debugging-port=9222"}})
+	if !invalid.IsError {
+		t.Fatal("arbitrary Chromium arguments were accepted")
 	}
 }
 

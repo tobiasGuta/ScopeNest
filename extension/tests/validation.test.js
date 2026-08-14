@@ -74,6 +74,12 @@ test("omits default direct network fields from container command data", () => {
   assert.deepEqual(containerCommandData(validateContainer({ ...valid, networkMode: "direct" })), valid);
 });
 
+test("automation is explicit, defaults off, and rejects custom browsers", () => {
+  assert.equal(validateContainer({ ...valid }).automationEnabled, false);
+  assert.deepEqual(containerCommandData(validateContainer({ ...valid, automationEnabled: true })), { ...valid, automationEnabled: true });
+  assert.throws(() => validateContainer({ ...valid, browserType: "custom", automationEnabled: true }), /standard Chromium-family/);
+});
+
 test("keeps non-default network fields in container command data", () => {
   assert.deepEqual(containerCommandData(validateContainer({ ...valid, networkMode: "template", environmentTemplateId: "template-id" })), { ...valid, networkMode: "template", environmentTemplateId: "template-id" });
   assert.deepEqual(containerCommandData(validateContainer({ ...valid, networkMode: "proxy", proxyProfileId: "proxy-id", environmentTemplateId: "template-id" })), { ...valid, networkMode: "proxy", proxyProfileId: "proxy-id", environmentTemplateId: "template-id" });

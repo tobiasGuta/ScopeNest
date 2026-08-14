@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/scopenest/scopenest/native-host/internal/protocol"
@@ -27,6 +29,7 @@ type createContainerInput struct {
 	NetworkMode           string `json:"networkMode"`
 	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
 	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
+	AutomationEnabled     bool   `json:"automationEnabled,omitempty"`
 }
 
 var mcpBrowserTypes = []string{"chrome", "chromium", "edge", "brave"}
@@ -40,6 +43,52 @@ type launchContainerInput struct {
 type closeContainerInput struct {
 	ID           string `json:"id"`
 	ExpectedName string `json:"expectedName"`
+}
+
+type browserIdentityInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+}
+
+type browserPageInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+	PageID       string `json:"pageId"`
+}
+
+type browserURLInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+	URL          string `json:"url"`
+}
+
+type browserNavigateInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+	PageID       string `json:"pageId"`
+	URL          string `json:"url"`
+}
+
+type browserClickInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+	PageID       string `json:"pageId"`
+	Selector     string `json:"selector"`
+}
+
+type browserTypeInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+	PageID       string `json:"pageId"`
+	Selector     string `json:"selector"`
+	Text         string `json:"text"`
+}
+
+type browserKeyInput struct {
+	ID           string `json:"id"`
+	ExpectedName string `json:"expectedName"`
+	PageID       string `json:"pageId"`
+	Key          string `json:"key"`
 }
 
 type toolValidationError struct{ code string }
@@ -129,6 +178,76 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 			ID string `json:"id"`
 		}{in.ID})
 	}, validateClose)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_status", command: "browser_status",
+		description: "Return whether the explicitly named running container has its opted-in, local-only automation bridge ready. Runtime endpoint details are not exposed.",
+		schema:      browserIdentitySchema(), annotations: readOnly,
+	}, func(in browserIdentityInput) protocol.Response { return adapter.BrowserStatus(in.ID, in.ExpectedName) }, validateBrowserIdentity)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_list_pages", command: "browser_list_pages",
+		description: "List the pages belonging only to this automation-enabled ScopeNest container. Returned page IDs are opaque and container-scoped.",
+		schema:      browserIdentitySchema(), annotations: readOnly,
+	}, func(in browserIdentityInput) protocol.Response {
+		return adapter.BrowserListPages(in.ID, in.ExpectedName)
+	}, validateBrowserIdentity)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_open_page", command: "browser_open_page",
+		description: "Open an authorized HTTP(S) URL in a new page inside this exact automation-enabled ScopeNest container.",
+		schema:      browserURLSchema(), annotations: launch,
+	}, func(in browserURLInput) protocol.Response {
+		return adapter.BrowserOpenPage(in.ID, in.ExpectedName, in.URL)
+	}, validateBrowserURL)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_navigate", command: "browser_navigate",
+		description: "Navigate one opaque page belonging to this exact automation-enabled ScopeNest container to an authorized HTTP(S) URL.",
+		schema:      browserNavigateSchema(), annotations: launch,
+	}, func(in browserNavigateInput) protocol.Response {
+		return adapter.BrowserNavigate(in.ID, in.ExpectedName, in.PageID, in.URL)
+	}, validateBrowserNavigate)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_snapshot", command: "browser_snapshot",
+		description: "Read a bounded text snapshot of one page belonging to this exact automation-enabled ScopeNest container. It may include authenticated page content.",
+		schema:      browserPageSchema(), annotations: readOnly,
+	}, func(in browserPageInput) protocol.Response {
+		return adapter.BrowserSnapshot(in.ID, in.ExpectedName, in.PageID)
+	}, validateBrowserPage)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_click", command: "browser_click",
+		description: "Click a CSS-selected element in one page belonging to this exact automation-enabled ScopeNest container.",
+		schema:      browserClickSchema(), annotations: mutating,
+	}, func(in browserClickInput) protocol.Response {
+		return adapter.BrowserClick(in.ID, in.ExpectedName, in.PageID, in.Selector)
+	}, validateBrowserClick)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_type", command: "browser_type",
+		description: "Type bounded UTF-8 text into a CSS-selected element in one page belonging to this exact automation-enabled ScopeNest container.",
+		schema:      browserTypeSchema(), annotations: mutating,
+	}, func(in browserTypeInput) protocol.Response {
+		return adapter.BrowserType(in.ID, in.ExpectedName, in.PageID, in.Selector, in.Text)
+	}, validateBrowserType)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_press_key", command: "browser_press_key",
+		description: "Send one allowlisted navigation or confirmation key to a page belonging to this exact automation-enabled ScopeNest container.",
+		schema:      browserKeySchema(), annotations: mutating,
+	}, func(in browserKeyInput) protocol.Response {
+		return adapter.BrowserPressKey(in.ID, in.ExpectedName, in.PageID, in.Key)
+	}, validateBrowserKey)
+
+	addTool(server, toolSpec{
+		name: "scopenest_browser_screenshot", command: "browser_screenshot",
+		description: "Capture a bounded PNG screenshot of one page belonging to this exact automation-enabled ScopeNest container. It may include authenticated page content.",
+		schema:      browserPageSchema(), annotations: readOnly,
+	}, func(in browserPageInput) protocol.Response {
+		return adapter.BrowserScreenshot(in.ID, in.ExpectedName, in.PageID)
+	}, validateBrowserPage)
 }
 
 type toolSpec struct {
@@ -241,6 +360,82 @@ func validateClose(in closeContainerInput) error {
 	return nil
 }
 
+func validateBrowserIdentity(in browserIdentityInput) error {
+	if security.ValidateID(in.ID) != nil {
+		return toolValidationError{"INVALID_CONTAINER_ID"}
+	}
+	if strings.TrimSpace(in.ExpectedName) == "" {
+		return toolValidationError{"INVALID_ARGUMENT"}
+	}
+	return nil
+}
+
+func validateBrowserPage(in browserPageInput) error {
+	if err := validateBrowserIdentity(browserIdentityInput{ID: in.ID, ExpectedName: in.ExpectedName}); err != nil {
+		return err
+	}
+	if security.ValidateID(in.PageID) != nil {
+		return toolValidationError{"INVALID_PAGE_ID"}
+	}
+	return nil
+}
+
+func validateBrowserURL(in browserURLInput) error {
+	if err := validateBrowserIdentity(browserIdentityInput{ID: in.ID, ExpectedName: in.ExpectedName}); err != nil {
+		return err
+	}
+	if _, err := security.ValidateURL(in.URL); err != nil {
+		return toolValidationError{"INVALID_URL"}
+	}
+	return nil
+}
+
+func validateBrowserNavigate(in browserNavigateInput) error {
+	if err := validateBrowserPage(browserPageInput{ID: in.ID, ExpectedName: in.ExpectedName, PageID: in.PageID}); err != nil {
+		return err
+	}
+	if _, err := security.ValidateURL(in.URL); err != nil {
+		return toolValidationError{"INVALID_URL"}
+	}
+	return nil
+}
+
+func validateBrowserClick(in browserClickInput) error {
+	if err := validateBrowserPage(browserPageInput{ID: in.ID, ExpectedName: in.ExpectedName, PageID: in.PageID}); err != nil {
+		return err
+	}
+	selector := strings.TrimSpace(in.Selector)
+	if selector == "" || len(selector) > 512 || !utf8.ValidString(selector) {
+		return toolValidationError{"INVALID_SELECTOR"}
+	}
+	for _, char := range selector {
+		if unicode.IsControl(char) {
+			return toolValidationError{"INVALID_SELECTOR"}
+		}
+	}
+	return nil
+}
+
+func validateBrowserType(in browserTypeInput) error {
+	if err := validateBrowserClick(browserClickInput{ID: in.ID, ExpectedName: in.ExpectedName, PageID: in.PageID, Selector: in.Selector}); err != nil {
+		return err
+	}
+	if in.Text == "" || len(in.Text) > 8192 {
+		return toolValidationError{"INVALID_TEXT"}
+	}
+	return nil
+}
+
+func validateBrowserKey(in browserKeyInput) error {
+	if err := validateBrowserPage(browserPageInput{ID: in.ID, ExpectedName: in.ExpectedName, PageID: in.PageID}); err != nil {
+		return err
+	}
+	if !map[string]bool{"Enter": true, "Tab": true, "Escape": true, "Backspace": true, "Delete": true, "ArrowUp": true, "ArrowDown": true, "ArrowLeft": true, "ArrowRight": true, "Home": true, "End": true, "PageUp": true, "PageDown": true, "Space": true}[in.Key] {
+		return toolValidationError{"INVALID_KEY"}
+	}
+	return nil
+}
+
 func annotations(readOnly, destructive, idempotent, openWorld bool) *mcp.ToolAnnotations {
 	destructiveValue := destructive
 	return &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructiveValue, IdempotentHint: idempotent, OpenWorldHint: &openWorld}
@@ -263,7 +458,36 @@ func createSchema() map[string]any {
 		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
 		"proxyProfileId":        idProperty("Existing proxy profile ID when networkMode is proxy"),
 		"environmentTemplateId": idProperty("Existing environment template ID when networkMode is template"),
+		"automationEnabled":     map[string]any{"type": "boolean", "description": "Explicitly allow localhost-only browser automation for this container when launched"},
 	}, "name", "color", "browserType", "networkMode")
+}
+
+func browserIdentitySchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}}, "id", "expectedName")
+}
+
+func browserPageSchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "pageId": idProperty("Opaque page ID returned by scopenest_browser_list_pages for this container")}, "id", "expectedName", "pageId")
+}
+
+func browserURLSchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "url": map[string]any{"type": "string", "minLength": 1, "maxLength": 8192}}, "id", "expectedName", "url")
+}
+
+func browserNavigateSchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "pageId": idProperty("Opaque page ID returned by scopenest_browser_list_pages for this container"), "url": map[string]any{"type": "string", "minLength": 1, "maxLength": 8192}}, "id", "expectedName", "pageId", "url")
+}
+
+func browserClickSchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "pageId": idProperty("Opaque page ID returned by scopenest_browser_list_pages for this container"), "selector": map[string]any{"type": "string", "minLength": 1, "maxLength": 512}}, "id", "expectedName", "pageId", "selector")
+}
+
+func browserTypeSchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "pageId": idProperty("Opaque page ID returned by scopenest_browser_list_pages for this container"), "selector": map[string]any{"type": "string", "minLength": 1, "maxLength": 512}, "text": map[string]any{"type": "string", "minLength": 1, "maxLength": 8192}}, "id", "expectedName", "pageId", "selector", "text")
+}
+
+func browserKeySchema() map[string]any {
+	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "pageId": idProperty("Opaque page ID returned by scopenest_browser_list_pages for this container"), "key": map[string]any{"type": "string", "enum": stringsToAny([]string{"Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Space"})}}, "id", "expectedName", "pageId", "key")
 }
 
 func launchSchema() map[string]any {

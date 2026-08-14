@@ -38,6 +38,7 @@ export function validateContainer(input) {
     networkMode: typeof input?.networkMode === "string" ? input.networkMode : "direct",
     proxyProfileId: typeof input?.proxyProfileId === "string" ? input.proxyProfileId : undefined,
     environmentTemplateId: typeof input?.environmentTemplateId === "string" ? input.environmentTemplateId : undefined,
+    automationEnabled: input?.automationEnabled === true,
   };
   if (!value.name || [...value.name].length > 80 || /[\u0000-\u001f\u007f]/.test(value.name)) throw new Error("Name must contain 1–80 visible characters.");
   if (bidiControl.test(value.name)) throw new Error("Name cannot contain bidirectional formatting characters.");
@@ -46,6 +47,8 @@ export function validateContainer(input) {
   if (bidiControl.test(value.icon)) throw new Error("Icon cannot contain bidirectional formatting characters.");
   if (!["chrome", "chromium", "edge", "brave", "custom"].includes(value.browserType)) throw new Error("Choose a supported browser.");
   if (!value.browserExecutable) throw new Error("Choose a browser executable.");
+
+  if (value.automationEnabled && value.browserType === "custom") throw new Error("Local automation requires a detected standard Chromium-family browser.");
   if (!["direct", "template", "proxy"].includes(value.networkMode)) throw new Error("Invalid network mode.");
   if (value.networkMode === "direct" && (value.proxyProfileId || value.environmentTemplateId)) throw new Error("Direct mode cannot include proxy or template references.");
   if (value.networkMode === "template" && !value.environmentTemplateId) throw new Error("Select an environment template.");
@@ -62,6 +65,8 @@ export function containerCommandData(container) {
     browserType: container.browserType,
     browserExecutable: container.browserExecutable,
   };
+
+  if (container.automationEnabled === true) data.automationEnabled = true;
   if (container.networkMode && container.networkMode !== "direct") data.networkMode = container.networkMode;
   if (container.proxyProfileId) data.proxyProfileId = container.proxyProfileId;
   if (container.environmentTemplateId) data.environmentTemplateId = container.environmentTemplateId;

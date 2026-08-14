@@ -84,6 +84,7 @@ type containerOutput struct {
 	EnvironmentTemplateID string              `json:"environmentTemplateId,omitempty"`
 	ProxyWarning          *proxyWarningOutput `json:"proxyWarning,omitempty"`
 	DirectFallbackUsed    bool                `json:"directFallbackUsed"`
+	AutomationEnabled     bool                `json:"automationEnabled"`
 }
 
 type proxyProfileOutput struct {
@@ -139,6 +140,41 @@ type readinessListenerOutput struct {
 type readinessCertificateOutput struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+}
+
+type browserStatusOutput struct {
+	ID                string `json:"id"`
+	AutomationEnabled bool   `json:"automationEnabled"`
+	AutomationReady   bool   `json:"automationReady"`
+	Running           bool   `json:"running"`
+	PageCount         int    `json:"pageCount"`
+}
+
+type browserPageOutput struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+type browserSnapshotOutput struct {
+	PageID    string `json:"pageId"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
+type browserActionOutput struct {
+	PageID    string `json:"pageId"`
+	Navigated bool   `json:"navigated,omitempty"`
+	Clicked   bool   `json:"clicked,omitempty"`
+	Typed     bool   `json:"typed,omitempty"`
+	Pressed   string `json:"pressed,omitempty"`
+}
+
+type browserScreenshotOutput struct {
+	PageID string `json:"pageId"`
+	PNG    string `json:"pngDataUrl"`
 }
 
 func makeToolResult(response protocol.Response) *mcp.CallToolResult {
@@ -202,6 +238,42 @@ func sanitizeData(command string, data any) (any, error) {
 		return value, nil
 	case "get_container_readiness":
 		var value readinessOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "browser_status":
+		var value browserStatusOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "browser_list_pages":
+		var value []browserPageOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "browser_open_page":
+		var value browserPageOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "browser_snapshot":
+		var value browserSnapshotOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "browser_navigate", "browser_click", "browser_type", "browser_press_key":
+		var value browserActionOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	case "browser_screenshot":
+		var value browserScreenshotOutput
 		if err := remarshal(data, &value); err != nil {
 			return nil, err
 		}

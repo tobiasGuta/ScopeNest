@@ -155,6 +155,34 @@ func TestArgumentsAreSeparatedAndStable(t *testing.T) {
 	}
 }
 
+func TestArgumentsOnlyEnableFixedLoopbackAutomationWhenRequested(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "profile")
+	disabled, err := Arguments(ArgumentOptions{ProfilePath: profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range disabled {
+		if strings.HasPrefix(arg, "--remote-debugging-") {
+			t.Fatalf("automation flag leaked into human-only container: %#v", disabled)
+		}
+	}
+	enabled, err := Arguments(ArgumentOptions{ProfilePath: profile, Automation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"--remote-debugging-port=0": false}
+	for _, arg := range enabled {
+		if _, ok := want[arg]; ok {
+			want[arg] = true
+		}
+	}
+	for arg, found := range want {
+		if !found {
+			t.Fatalf("missing fixed ScopeNest automation argument %q in %#v", arg, enabled)
+		}
+	}
+}
+
 func TestArgumentsRejectUnsafeURLSchemes(t *testing.T) {
 	if _, err := Arguments(ArgumentOptions{ProfilePath: filepath.Join(t.TempDir(), "profile"), URL: "file:///etc/passwd"}); err == nil {
 		t.Fatal("accepted file URL")
