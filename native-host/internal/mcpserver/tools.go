@@ -34,6 +34,7 @@ type createContainerInput struct {
 
 type updateContainerInput struct {
 	ID                    string `json:"id"`
+	ExpectedName          string `json:"expectedName"`
 	Name                  string `json:"name"`
 	Color                 string `json:"color"`
 	Icon                  string `json:"icon,omitempty"`
@@ -179,7 +180,7 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 		description: "Update an existing ScopeNest browser container's metadata, browser selection, network mode, and automation settings.",
 		schema:      updateSchema(), annotations: mutating,
 	}, func(in updateContainerInput) protocol.Response {
-		return adapter.Execute("update_container", in)
+		return adapter.ExecuteWithIdentity("update_container", in.ID, in.ExpectedName, in)
 	}, validateUpdate)
 
 	addTool(server, toolSpec{
@@ -361,6 +362,9 @@ func validateUpdate(in updateContainerInput) error {
 	if security.ValidateID(in.ID) != nil {
 		return toolValidationError{"INVALID_CONTAINER_ID"}
 	}
+	if strings.TrimSpace(in.ExpectedName) == "" {
+		return toolValidationError{"INVALID_ARGUMENT"}
+	}
 	return validateCreate(createContainerInput{
 		Name:                  in.Name,
 		Color:                 in.Color,
@@ -510,7 +514,8 @@ func createSchema() map[string]any {
 func updateSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"id":                    idProperty("ScopeNest container ID to update"),
-		"name":                  map[string]any{"type": "string", "description": "Container name", "minLength": 1, "maxLength": 80},
+		"expectedName":          map[string]any{"type": "string", "description": "Exact current container name used as an identity confirmation", "minLength": 1, "maxLength": 80},
+		"name":                  map[string]any{"type": "string", "description": "New container name", "minLength": 1, "maxLength": 80},
 		"color":                 map[string]any{"type": "string", "description": "Six-digit hexadecimal container color", "pattern": "^#[0-9a-fA-F]{6}$"},
 		"icon":                  map[string]any{"type": "string", "description": "Optional short container icon", "maxLength": 8},
 		"browserType":           map[string]any{"type": "string", "description": "Standard Chromium-family browser type resolved from locally detected installations", "enum": stringsToAny(mcpBrowserTypes)},
@@ -518,7 +523,7 @@ func updateSchema() map[string]any {
 		"proxyProfileId":        idProperty("Existing proxy profile ID when networkMode is proxy"),
 		"environmentTemplateId": idProperty("Existing environment template ID when networkMode is template"),
 		"automationEnabled":     map[string]any{"type": "boolean", "description": "Explicitly allow localhost-only browser automation for this container when launched"},
-	}, "id", "name", "color", "browserType", "networkMode")
+	}, "id", "expectedName", "name", "color", "browserType", "networkMode")
 }
 
 func browserIdentitySchema() map[string]any {

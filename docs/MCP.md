@@ -216,11 +216,12 @@ Create a direct Chrome container. MCP creation accepts only `chrome`, `chromium`
 }
 ```
 
-Update an existing container's properties, network mode, or automation settings:
+Update an existing container's properties, network mode, or automation settings (requires `expectedName` as an identity and staleness check):
 
 ```json
 {
   "id": "0123456789abcdef0123456789abcdef",
+  "expectedName": "Target - User A",
   "name": "Target - User A Updated",
   "color": "#725cff",
   "icon": "A",

@@ -63,7 +63,7 @@ func (a *Adapter) Execute(command string, data any) protocol.Response {
 func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any) protocol.Response {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if command != "close_container" {
+	if command != "close_container" && command != "update_container" {
 		return localError(command, "UNKNOWN_COMMAND", "The requested ScopeNest operation is not available through MCP.")
 	}
 	list := a.executeLocked("list_containers", struct{}{})

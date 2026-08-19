@@ -312,7 +312,7 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 			}
 		}
 		if tool.Name == "scopenest_update_container" {
-			assertRequired(t, tool.Name, schema, "id", "name", "color", "browserType", "networkMode")
+			assertRequired(t, tool.Name, schema, "id", "expectedName", "name", "color", "browserType", "networkMode")
 			properties, ok := schema["properties"].(map[string]any)
 			if !ok {
 				t.Fatalf("tool %s has invalid properties: %#v", tool.Name, schema)
@@ -458,7 +458,7 @@ func createArgs() map[string]any {
 }
 
 func updateArgs() map[string]any {
-	return map[string]any{"id": testContainerID, "name": "Target - User A", "color": "#725cff", "browserType": "chrome", "networkMode": "direct"}
+	return map[string]any{"id": testContainerID, "expectedName": "Target - User A", "name": "Target - User A", "color": "#725cff", "browserType": "chrome", "networkMode": "direct"}
 }
 
 func jsonEqual(a, b any) bool {
@@ -890,12 +890,48 @@ func TestUpdateContainerTool(t *testing.T) {
 		t.Fatalf("valid update container failed: %#v", result.Content)
 	}
 	calls, _ := handler.snapshot()
-	if len(calls) != 1 || calls[0].request.Command != "update_container" || calls[0].data["automationEnabled"] != true {
+	if len(calls) != 2 || calls[1].request.Command != "update_container" || calls[1].data["automationEnabled"] != true {
 		t.Fatalf("update was not forwarded correctly: %#v", calls)
+	}
+
+	mismatch := callTool(t, session, "scopenest_update_container", map[string]any{
+		"id":           testContainerID,
+		"expectedName": "Wrong Name",
+		"name":         "Target",
+		"color":        "#725cff",
+		"browserType":  "chrome",
+		"networkMode":  "direct",
+	})
+	if !mismatch.IsError {
+		t.Fatal("update_container accepted mismatched container name")
+	}
+
+	missingExpected := callTool(t, session, "scopenest_update_container", map[string]any{
+		"id":          testContainerID,
+		"name":        "Target",
+		"color":       "#725cff",
+		"browserType": "chrome",
+		"networkMode": "direct",
+	})
+	if !missingExpected.IsError {
+		t.Fatal("update_container accepted missing expectedName")
+	}
+
+	blankExpected := callTool(t, session, "scopenest_update_container", map[string]any{
+		"id":           testContainerID,
+		"expectedName": "   ",
+		"name":         "Target",
+		"color":        "#725cff",
+		"browserType":  "chrome",
+		"networkMode":  "direct",
+	})
+	if !blankExpected.IsError {
+		t.Fatal("update_container accepted whitespace-only expectedName")
 	}
 
 	invalid := callTool(t, session, "scopenest_update_container", map[string]any{
 		"id":              testContainerID,
+		"expectedName":    "Target - User A",
 		"name":            "Target",
 		"color":           "#725cff",
 		"browserType":     "chrome",
