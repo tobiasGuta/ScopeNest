@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -142,6 +143,12 @@ type readinessCertificateOutput struct {
 	State string `json:"state"`
 }
 
+type cdpEndpointOutput struct {
+	Port         int    `json:"port"`
+	WSEndpoint   string `json:"wsEndpoint"`
+	HTTPEndpoint string `json:"httpEndpoint"`
+}
+
 type browserStatusOutput struct {
 	ID                string `json:"id"`
 	AutomationEnabled bool   `json:"automationEnabled"`
@@ -213,7 +220,7 @@ func sanitizeData(command string, data any) (any, error) {
 			return nil, err
 		}
 		return value, nil
-	case "create_container", "create_temporary_container", "launch_container", "close_container":
+	case "create_container", "create_temporary_container", "update_container", "launch_container", "close_container":
 		var value containerOutput
 		if err := remarshal(data, &value); err != nil {
 			return nil, err
@@ -240,6 +247,15 @@ func sanitizeData(command string, data any) (any, error) {
 		var value readinessOutput
 		if err := remarshal(data, &value); err != nil {
 			return nil, err
+		}
+		return value, nil
+	case "get_cdp_endpoint":
+		var value cdpEndpointOutput
+		if err := remarshal(data, &value); err != nil {
+			return nil, err
+		}
+		if value.Port < 1024 || value.Port > 65535 || !strings.HasPrefix(value.WSEndpoint, "ws://127.0.0.1:") || !strings.HasPrefix(value.HTTPEndpoint, "http://127.0.0.1:") {
+			return nil, errors.New("invalid loopback CDP endpoint")
 		}
 		return value, nil
 	case "browser_status":

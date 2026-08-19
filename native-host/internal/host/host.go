@@ -99,13 +99,15 @@ type updateInput struct {
 }
 
 type launchInput struct {
-	ID  string `json:"id"`
-	URL string `json:"url,omitempty"`
+	ID                string `json:"id"`
+	URL               string `json:"url,omitempty"`
+	AutomationEnabled *bool  `json:"automationEnabled,omitempty"`
 }
 
 type launchPolicy struct {
 	expectedName        string
 	requireStandardType bool
+	automationEnabled   *bool
 }
 
 type validatePathInput struct {
@@ -203,11 +205,12 @@ func (h *Host) Handle(req protocol.Request) protocol.Response {
 
 // LaunchForMCP applies MCP-only identity and browser restrictions while the
 // current container record is reserved for launch under the store lock.
-func (h *Host) LaunchForMCP(id, expectedName, url string) protocol.Response {
+func (h *Host) LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response {
 	req := protocol.Request{Version: protocol.Version, Command: "launch_container"}
-	data, err := h.launchWithPolicy(launchInput{ID: id, URL: url}, launchPolicy{
+	data, err := h.launchWithPolicy(launchInput{ID: id, URL: url, AutomationEnabled: automationEnabled}, launchPolicy{
 		expectedName:        expectedName,
 		requireStandardType: true,
+		automationEnabled:   automationEnabled,
 	})
 	return commandResponse(req, data, err)
 }
@@ -602,7 +605,7 @@ func (h *Host) update(in updateInput) (model.Container, error) {
 }
 
 func (h *Host) launch(in launchInput) (model.Container, error) {
-	return h.launchWithPolicy(in, launchPolicy{})
+	return h.launchWithPolicy(in, launchPolicy{automationEnabled: in.AutomationEnabled})
 }
 
 func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Container, error) {
@@ -739,6 +742,7 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 		return model.Container{}, err
 	}
 	go h.watcher(c.ID, process)
+	launched.AutomationEnabled = c.AutomationEnabled
 	launched.ProxyWarning = proxyWarning
 	launched.DirectFallbackUsed = directFallbackUsed
 	return launched, nil
@@ -775,6 +779,13 @@ func (h *Host) reserveLaunchWithEnvironment(id string, policy launchPolicy) (mod
 			}
 			if policy.requireStandardType && !isStandardBrowserType(container.BrowserType) {
 				return fail("CUSTOM_BROWSER_REQUIRES_HUMAN_LAUNCH", "custom browser requires human launch")
+			}
+			effectiveAutomation := container.AutomationEnabled
+			if policy.automationEnabled != nil {
+				effectiveAutomation = *policy.automationEnabled
+			}
+			if effectiveAutomation && !isStandardBrowserType(container.BrowserType) {
+				return fail("AUTOMATION_REQUIRES_STANDARD_BROWSER", "automation requires a detected standard Chromium-family browser")
 			}
 			if container.State == model.StateLaunching {
 				reservedAt := container.UpdatedAt
@@ -816,6 +827,7 @@ func (h *Host) reserveLaunchWithEnvironment(id string, policy launchPolicy) (mod
 			container.UpdatedAt = now
 			container.PendingCleanup = false
 			reserved = *container
+			reserved.AutomationEnabled = effectiveAutomation
 			effective = resolved
 			certs = readyCerts
 			return nil

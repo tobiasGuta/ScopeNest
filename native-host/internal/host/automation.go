@@ -48,6 +48,12 @@ type automationPageContext struct {
 	err    error
 }
 
+type CDPEndpoint struct {
+	Port         int    `json:"port"`
+	WSEndpoint   string `json:"wsEndpoint"`
+	HTTPEndpoint string `json:"httpEndpoint"`
+}
+
 type automationStatus struct {
 	ID                string `json:"id"`
 	AutomationEnabled bool   `json:"automationEnabled"`
@@ -210,9 +216,6 @@ func (h *Host) automationForMCP(id, expectedName string) (*automationRuntime, er
 		if container.Name != expectedName {
 			return nil, fail("CONTAINER_NAME_MISMATCH", "container name changed")
 		}
-		if !container.AutomationEnabled {
-			return nil, fail("AUTOMATION_DISABLED", "browser automation is not enabled for this container")
-		}
 		if !isStandardBrowserType(container.BrowserType) {
 			return nil, fail("AUTOMATION_REQUIRES_STANDARD_BROWSER", "automation requires a standard Chromium-family browser")
 		}
@@ -223,8 +226,14 @@ func (h *Host) automationForMCP(id, expectedName string) (*automationRuntime, er
 		process := h.processes[id]
 		runtime := h.automations[id]
 		h.mu.Unlock()
-		if process == nil || runtime == nil || !process.Running() {
+		if process == nil || !process.Running() {
+			if !container.AutomationEnabled {
+				return nil, fail("AUTOMATION_DISABLED", "browser automation is not enabled for this container")
+			}
 			return nil, fail("AUTOMATION_NOT_READY", "the owned browser automation endpoint is not ready")
+		}
+		if runtime == nil {
+			return nil, fail("AUTOMATION_DISABLED", "browser automation is not enabled for this container")
 		}
 		return runtime, nil
 	}
@@ -241,6 +250,18 @@ func (h *Host) BrowserStatusForMCP(id, expectedName string) protocol.Response {
 		return commandResponse(protocol.Request{Version: protocol.Version, Command: "browser_status"}, nil, automationError(err))
 	}
 	return commandResponse(protocol.Request{Version: protocol.Version, Command: "browser_status"}, automationStatus{ID: id, AutomationEnabled: true, AutomationReady: true, Running: true, PageCount: len(pages)}, nil)
+}
+
+func (h *Host) BrowserCDPEndpointForMCP(id, expectedName string) protocol.Response {
+	runtime, err := h.automationForMCP(id, expectedName)
+	if err != nil {
+		return commandResponse(protocol.Request{Version: protocol.Version, Command: "get_cdp_endpoint"}, nil, err)
+	}
+	return commandResponse(protocol.Request{Version: protocol.Version, Command: "get_cdp_endpoint"}, CDPEndpoint{
+		Port:         runtime.port,
+		WSEndpoint:   runtime.endpoint,
+		HTTPEndpoint: fmt.Sprintf("http://127.0.0.1:%d", runtime.port),
+	}, nil)
 }
 
 func (h *Host) BrowserListPagesForMCP(id, expectedName string) protocol.Response {

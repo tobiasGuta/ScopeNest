@@ -424,6 +424,185 @@ func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 	}
 }
 
+func TestBrowserCDPEndpointForMCP(t *testing.T) {
+	h, _, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	launcher := &queuedLauncher{processes: []browser.Process{process}}
+	h.launcher = launcher
+	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
+		return &automationRuntime{
+			port:     54321,
+			endpoint: "ws://127.0.0.1:54321/devtools/browser/test-browser-id",
+			pages:    map[string]target.ID{},
+		}, nil
+	}
+
+	created := h.Handle(request(t, "create_container", containerInput{Name: "CDP Test", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+
+	// Not running yet -> AUTOMATION_NOT_RUNNING
+	notRunning := h.BrowserCDPEndpointForMCP(container.ID, container.Name)
+	if notRunning.Success || notRunning.ErrorCode != "AUTOMATION_NOT_RUNNING" {
+		t.Fatalf("expected AUTOMATION_NOT_RUNNING, got %#v", notRunning)
+	}
+
+	// Launch
+	if response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID})); !response.Success {
+		t.Fatalf("launch failed: %#v", response)
+	}
+
+	// Name mismatch
+	mismatch := h.BrowserCDPEndpointForMCP(container.ID, "Wrong Name")
+	if mismatch.Success || mismatch.ErrorCode != "CONTAINER_NAME_MISMATCH" {
+		t.Fatalf("expected CONTAINER_NAME_MISMATCH, got %#v", mismatch)
+	}
+
+	// Success
+	res := h.BrowserCDPEndpointForMCP(container.ID, container.Name)
+	if !res.Success {
+		t.Fatalf("expected success, got %#v", res)
+	}
+	endpoint, ok := res.Data.(CDPEndpoint)
+	if !ok {
+		t.Fatalf("unexpected data type %#v", res.Data)
+	}
+	if endpoint.Port != 54321 {
+		t.Errorf("Port = %d, want 54321", endpoint.Port)
+	}
+	if endpoint.WSEndpoint != "ws://127.0.0.1:54321/devtools/browser/test-browser-id" {
+		t.Errorf("WSEndpoint = %q", endpoint.WSEndpoint)
+	}
+	if endpoint.HTTPEndpoint != "http://127.0.0.1:54321" {
+		t.Errorf("HTTPEndpoint = %q", endpoint.HTTPEndpoint)
+	}
+}
+
+func TestLaunchContainerAutomationOverrideEnablesSessionAutomationWithoutMutatingStore(t *testing.T) {
+	h, st, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	launcher := &queuedLauncher{processes: []browser.Process{process}}
+	h.launcher = launcher
+	automationStarted := false
+	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
+		automationStarted = true
+		return &automationRuntime{pages: map[string]target.ID{}}, nil
+	}
+
+	// Create container with automation disabled
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Override Test", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: false}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+
+	// Launch with automation override = true
+	enableOverride := true
+	response := h.LaunchForMCP(container.ID, container.Name, "", &enableOverride)
+	if !response.Success {
+		t.Fatalf("launch with automationEnabled override failed: %#v", response)
+	}
+	launched := response.Data.(model.Container)
+	if !launched.AutomationEnabled {
+		t.Fatalf("launched container model does not have AutomationEnabled=true: %#v", launched)
+	}
+	if !automationStarted {
+		t.Fatal("automationStarter was not called despite automationEnabled=true override")
+	}
+
+	// Verify automation runtime recognizes the active session automation
+	runtime, err := h.automationForMCP(container.ID, container.Name)
+	if err != nil || runtime == nil {
+		t.Fatalf("automationForMCP failed for override session: runtime=%v err=%v", runtime, err)
+	}
+
+	// Verify database record still has AutomationEnabled=false
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].AutomationEnabled {
+		t.Fatalf("database record was mutated by launch override: %#v", db.Containers)
+	}
+
+	// Close container
+	closed := h.Handle(request(t, "close_container", idInput{ID: container.ID}))
+	if !closed.Success {
+		t.Fatalf("close failed: %#v", closed)
+	}
+}
+
+func TestLaunchContainerAutomationOverrideCanDisableSessionAutomation(t *testing.T) {
+	h, st, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
+	automationStarted := false
+	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
+		automationStarted = true
+		return &automationRuntime{pages: map[string]target.ID{}}, nil
+	}
+
+	// Create container with automation enabled
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Disable Test", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+
+	// Launch with automation override = false
+	disableOverride := false
+	response := h.LaunchForMCP(container.ID, container.Name, "", &disableOverride)
+	if !response.Success {
+		t.Fatalf("launch with automationEnabled=false override failed: %#v", response)
+	}
+	launched := response.Data.(model.Container)
+	if launched.AutomationEnabled {
+		t.Fatalf("launched container model unexpectedly has AutomationEnabled=true: %#v", launched)
+	}
+	if automationStarted {
+		t.Fatal("automationStarter was unexpectedly called despite automationEnabled=false override")
+	}
+
+	// Verify MCP browser status reports automation is disabled
+	status := h.BrowserStatusForMCP(container.ID, container.Name)
+	if status.Success || status.ErrorCode != "AUTOMATION_DISABLED" {
+		t.Fatalf("BrowserStatusForMCP unexpectedly succeeded or returned wrong error: %#v", status)
+	}
+
+	// Verify database record still has AutomationEnabled=true
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || !db.Containers[0].AutomationEnabled {
+		t.Fatalf("database record was mutated: %#v", db.Containers)
+	}
+
+	// Close container
+	closed := h.Handle(request(t, "close_container", idInput{ID: container.ID}))
+	if !closed.Success {
+		t.Fatalf("close failed: %#v", closed)
+	}
+}
+
+func TestLaunchContainerAutomationOverrideRejectsCustomBrowser(t *testing.T) {
+	h, _, executable := testHost(t)
+
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Custom Browser", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable, AutomationEnabled: false}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+
+	enableOverride := true
+	response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID, AutomationEnabled: &enableOverride}))
+	if response.Success || response.ErrorCode != "AUTOMATION_REQUIRES_STANDARD_BROWSER" {
+		t.Fatalf("launch response for custom browser with automationEnabled=true override = %#v", response)
+	}
+}
+
 func TestCreateContainerAcceptsExplicitDirectNetworkMode(t *testing.T) {
 	h, st, executable := testHost(t)
 	response := h.Handle(request(t, "create_container", map[string]any{"name": "Direct", "color": "#725cff", "icon": "", "browserType": "custom", "browserExecutable": executable, "networkMode": "direct"}))
@@ -1092,7 +1271,7 @@ func TestLaunchForMCPUsesCurrentContainerRecordInReservationTransaction(t *testi
 				t.Fatal(err)
 			}
 
-			response := h.LaunchForMCP(container.ID, container.Name, "https://example.com")
+			response := h.LaunchForMCP(container.ID, container.Name, "https://example.com", nil)
 			if response.Success || response.ErrorCode != test.wantCode {
 				t.Fatalf("restricted launch response = %#v", response)
 			}

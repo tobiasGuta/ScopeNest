@@ -12,12 +12,13 @@ import (
 // CommandHandler is the security authority used by the MCP adapter.
 type CommandHandler interface {
 	Handle(protocol.Request) protocol.Response
-	LaunchForMCP(id, expectedName, url string) protocol.Response
+	LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response
 	StartStartupCleanup()
 }
 
 type BrowserHandler interface {
 	BrowserStatusForMCP(id, expectedName string) protocol.Response
+	BrowserCDPEndpointForMCP(id, expectedName string) protocol.Response
 	BrowserListPagesForMCP(id, expectedName string) protocol.Response
 	BrowserOpenPageForMCP(id, expectedName, url string) protocol.Response
 	BrowserNavigateForMCP(id, expectedName, pageID, url string) protocol.Response
@@ -33,7 +34,7 @@ var allowedCommands = map[string]bool{
 	"get_running_containers": true, "list_proxy_profiles": true,
 	"list_environment_templates": true, "get_container_readiness": true,
 	"create_container": true, "create_temporary_container": true,
-	"close_container": true,
+	"update_container": true, "close_container": true,
 }
 
 // Adapter serializes all access to one long-lived ScopeNest host instance.
@@ -96,7 +97,7 @@ func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any
 	return localError(command, "NOT_FOUND", "The requested container was not found; no action was taken.")
 }
 
-func (a *Adapter) LaunchForMCP(id, expectedName, url string) protocol.Response {
+func (a *Adapter) LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	requestID, err := newRequestID()
@@ -104,7 +105,7 @@ func (a *Adapter) LaunchForMCP(id, expectedName, url string) protocol.Response {
 		a.scheduleCleanupLocked()
 		return localError("launch_container", "INTERNAL_ERROR", "ScopeNest could not create an internal request identifier.")
 	}
-	response := a.handler.LaunchForMCP(id, expectedName, url)
+	response := a.handler.LaunchForMCP(id, expectedName, url, automationEnabled)
 	response.RequestID = requestID
 	response.Command = "launch_container"
 	a.scheduleCleanupLocked()
@@ -113,6 +114,12 @@ func (a *Adapter) LaunchForMCP(id, expectedName, url string) protocol.Response {
 
 func (a *Adapter) BrowserStatus(id, expectedName string) protocol.Response {
 	return a.browserCall("browser_status", func(handler BrowserHandler) protocol.Response { return handler.BrowserStatusForMCP(id, expectedName) })
+}
+
+func (a *Adapter) BrowserCDPEndpoint(id, expectedName string) protocol.Response {
+	return a.browserCall("get_cdp_endpoint", func(handler BrowserHandler) protocol.Response {
+		return handler.BrowserCDPEndpointForMCP(id, expectedName)
+	})
 }
 
 func (a *Adapter) BrowserListPages(id, expectedName string) protocol.Response {

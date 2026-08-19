@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,12 +85,16 @@ func (f *fakeHandler) Handle(request protocol.Request) protocol.Response {
 	return protocol.NewSuccess(request, f.responseData(request.Command))
 }
 
-func (f *fakeHandler) LaunchForMCP(id, expectedName, url string) protocol.Response {
+func (f *fakeHandler) LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response {
 	requestID, _ := newRequestID()
-	raw, _ := json.Marshal(map[string]any{"id": id, "url": url})
+	data := map[string]any{"id": id, "url": url}
+	if automationEnabled != nil {
+		data["automationEnabled"] = *automationEnabled
+	}
+	raw, _ := json.Marshal(data)
 	request := protocol.Request{Version: protocol.Version, RequestID: requestID, Command: "launch_container", Data: raw}
 	f.mu.Lock()
-	f.calls = append(f.calls, recordedCall{request: request, data: map[string]any{"id": id, "url": url}})
+	f.calls = append(f.calls, recordedCall{request: request, data: data})
 	f.mu.Unlock()
 
 	encoded, _ := json.Marshal(f.responseData("list_containers"))
@@ -252,9 +257,11 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 		"scopenest_get_container_readiness":    {true, false, true, false},
 		"scopenest_create_container":           {false, false, false, false},
 		"scopenest_create_temporary_container": {false, false, false, false},
+		"scopenest_update_container":           {false, false, false, false},
 		"scopenest_launch_container":           {false, true, false, true},
 		"scopenest_close_container":            {false, true, false, false},
 		"scopenest_browser_status":             {true, false, true, false},
+		"scopenest_get_cdp_endpoint":           {true, false, true, false},
 		"scopenest_browser_list_pages":         {true, false, true, false},
 		"scopenest_browser_open_page":          {false, true, false, true},
 		"scopenest_browser_navigate":           {false, true, false, true},
@@ -304,8 +311,34 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 				t.Errorf("tool %s browser enum = %#v", tool.Name, browserType["enum"])
 			}
 		}
-		if tool.Name == "scopenest_launch_container" || tool.Name == "scopenest_close_container" {
+		if tool.Name == "scopenest_update_container" {
+			assertRequired(t, tool.Name, schema, "id", "name", "color", "browserType", "networkMode")
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool %s has invalid properties: %#v", tool.Name, schema)
+			}
+			if _, exposed := properties["browserExecutable"]; exposed {
+				t.Errorf("tool %s exposes browserExecutable", tool.Name)
+			}
+			if automation, ok := properties["automationEnabled"].(map[string]any); !ok || automation["type"] != "boolean" {
+				t.Errorf("tool %s automationEnabled schema = %#v", tool.Name, automation)
+			}
+			browserType, ok := properties["browserType"].(map[string]any)
+			if !ok || !jsonEqual(browserType["enum"], stringsToAny(mcpBrowserTypes)) {
+				t.Errorf("tool %s browser enum = %#v", tool.Name, browserType["enum"])
+			}
+		}
+		if tool.Name == "scopenest_launch_container" || tool.Name == "scopenest_close_container" || tool.Name == "scopenest_get_cdp_endpoint" {
 			assertRequired(t, tool.Name, schema, "id", "expectedName")
+		}
+		if tool.Name == "scopenest_launch_container" {
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool %s has invalid properties: %#v", tool.Name, schema)
+			}
+			if automation, ok := properties["automationEnabled"].(map[string]any); !ok || automation["type"] != "boolean" {
+				t.Errorf("tool %s automationEnabled schema = %#v", tool.Name, automation)
+			}
 		}
 	}
 	if len(seen) != len(expected) {
@@ -316,7 +349,7 @@ func TestRegisteredToolsAndSchemas(t *testing.T) {
 			t.Errorf("missing tool %s", name)
 		}
 	}
-	for _, forbidden := range []string{"delete_container", "cleanup_temporary_containers", "update_container", "create_proxy_profile", "update_proxy_profile", "delete_proxy_profile", "import_certificate", "install_certificate_trust", "remove_certificate_trust", "delete_certificate", "acknowledge_manual_certificate_trust", "create_environment_template", "update_environment_template", "delete_environment_template", "validate_browser_path", "execute"} {
+	for _, forbidden := range []string{"delete_container", "cleanup_temporary_containers", "create_proxy_profile", "update_proxy_profile", "delete_proxy_profile", "import_certificate", "install_certificate_trust", "remove_certificate_trust", "delete_certificate", "acknowledge_manual_certificate_trust", "create_environment_template", "update_environment_template", "delete_environment_template", "validate_browser_path", "execute"} {
 		for name := range seen {
 			if strings.Contains(name, forbidden) {
 				t.Errorf("forbidden tool registered: %s", name)
@@ -379,6 +412,7 @@ func TestToolMappingsAndRequestEnvelope(t *testing.T) {
 		{"scopenest_get_container_readiness", "get_container_readiness", map[string]any{"id": testContainerID}, map[string]any{"id": testContainerID}},
 		{"scopenest_create_container", "create_container", createArgs(), createArgs()},
 		{"scopenest_create_temporary_container", "create_temporary_container", createArgs(), createArgs()},
+		{"scopenest_update_container", "update_container", updateArgs(), updateArgs()},
 		{"scopenest_launch_container", "launch_container", map[string]any{"id": testContainerID, "expectedName": "Target - User A", "url": "https://example.com"}, map[string]any{"id": testContainerID, "url": "https://example.com"}},
 		{"scopenest_close_container", "close_container", map[string]any{"id": testContainerID, "expectedName": "Target - User A"}, map[string]any{"id": testContainerID}},
 	}
@@ -421,6 +455,10 @@ func TestToolMappingsAndRequestEnvelope(t *testing.T) {
 
 func createArgs() map[string]any {
 	return map[string]any{"name": "Target - User A", "color": "#725cff", "browserType": "chrome", "networkMode": "direct"}
+}
+
+func updateArgs() map[string]any {
+	return map[string]any{"id": testContainerID, "name": "Target - User A", "color": "#725cff", "browserType": "chrome", "networkMode": "direct"}
 }
 
 func jsonEqual(a, b any) bool {
@@ -598,7 +636,7 @@ func TestLaunchUsesRestrictedHostMethod(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			handler := &fakeHandler{}
 			adapter := NewAdapter(handler)
-			response := adapter.LaunchForMCP(test.id, test.expected, "")
+			response := adapter.LaunchForMCP(test.id, test.expected, "", nil)
 			if response.Success != (test.wantCode == "") || response.ErrorCode != test.wantCode {
 				t.Fatalf("response = %#v", response)
 			}
@@ -735,7 +773,7 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 		t.Fatalf("create: %#v", created)
 	}
 	container := created.Data.(model.Container)
-	launched := owner.LaunchForMCP(container.ID, container.Name, "")
+	launched := owner.LaunchForMCP(container.ID, container.Name, "", nil)
 	if !launched.Success {
 		t.Fatalf("launch: %#v", launched)
 	}
@@ -803,4 +841,148 @@ func TestPersistedPIDNeverGrantsCloseAuthority(t *testing.T) {
 		t.Fatalf("persisted PID granted authority: %#v", response)
 	}
 	waitForStartupCleanup(t, nativeHost)
+}
+
+func TestLaunchContainerAutomationOverride(t *testing.T) {
+	handler := &fakeHandler{}
+	session, closeSession := connectClient(t, handler)
+	defer closeSession()
+
+	args := map[string]any{
+		"id":                testContainerID,
+		"expectedName":      "Target - User A",
+		"url":               "https://example.com",
+		"automationEnabled": true,
+	}
+	result := callTool(t, session, "scopenest_launch_container", args)
+	if result.IsError {
+		t.Fatalf("launch container with automationEnabled override failed: %#v", result.Content)
+	}
+	calls, _ := handler.snapshot()
+	if len(calls) != 1 || calls[0].data["automationEnabled"] != true {
+		t.Fatalf("automationEnabled override was not forwarded: %#v", calls)
+	}
+
+	invalid := callTool(t, session, "scopenest_launch_container", map[string]any{
+		"id":                testContainerID,
+		"expectedName":      "Target - User A",
+		"automationEnabled": "not-a-bool",
+	})
+	if !invalid.IsError {
+		t.Fatal("invalid automationEnabled type was accepted")
+	}
+}
+
+func TestUpdateContainerTool(t *testing.T) {
+	handler := &fakeHandler{}
+	session, closeSession := connectClient(t, handler)
+	defer closeSession()
+
+	args := updateArgs()
+	args["automationEnabled"] = true
+	result := callTool(t, session, "scopenest_update_container", args)
+	if result.IsError {
+		for _, c := range result.Content {
+			if tc, ok := c.(*mcp.TextContent); ok {
+				t.Logf("tool error content: %s", tc.Text)
+			}
+		}
+		t.Fatalf("valid update container failed: %#v", result.Content)
+	}
+	calls, _ := handler.snapshot()
+	if len(calls) != 1 || calls[0].request.Command != "update_container" || calls[0].data["automationEnabled"] != true {
+		t.Fatalf("update was not forwarded correctly: %#v", calls)
+	}
+
+	invalid := callTool(t, session, "scopenest_update_container", map[string]any{
+		"id":              testContainerID,
+		"name":            "Target",
+		"color":           "#725cff",
+		"browserType":     "chrome",
+		"networkMode":     "direct",
+		"extraChromeArgs": []string{"--bad"},
+	})
+	if !invalid.IsError {
+		t.Fatal("arbitrary arguments were accepted for update_container")
+	}
+}
+
+type fakeBrowserHandler struct {
+	fakeHandler
+	cdpPort     int
+	cdpEndpoint string
+}
+
+func (f *fakeBrowserHandler) BrowserStatusForMCP(id, expectedName string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_status"}, browserStatusOutput{ID: id, AutomationEnabled: true, AutomationReady: true, Running: true, PageCount: 1})
+}
+
+func (f *fakeBrowserHandler) BrowserCDPEndpointForMCP(id, expectedName string) protocol.Response {
+	if expectedName != "Target - User A" {
+		return protocol.NewError(protocol.Request{Version: protocol.Version, Command: "get_cdp_endpoint"}, "CONTAINER_NAME_MISMATCH", "name mismatch")
+	}
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "get_cdp_endpoint"}, map[string]any{
+		"port":         f.cdpPort,
+		"wsEndpoint":   f.cdpEndpoint,
+		"httpEndpoint": fmt.Sprintf("http://127.0.0.1:%d", f.cdpPort),
+	})
+}
+
+func (f *fakeBrowserHandler) BrowserListPagesForMCP(id, expectedName string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_list_pages"}, []browserPageOutput{})
+}
+func (f *fakeBrowserHandler) BrowserOpenPageForMCP(id, expectedName, url string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_open_page"}, browserPageOutput{})
+}
+func (f *fakeBrowserHandler) BrowserNavigateForMCP(id, expectedName, pageID, url string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_navigate"}, map[string]any{"pageId": pageID, "navigated": true})
+}
+func (f *fakeBrowserHandler) BrowserSnapshotForMCP(id, expectedName, pageID string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_snapshot"}, browserSnapshotOutput{})
+}
+func (f *fakeBrowserHandler) BrowserClickForMCP(id, expectedName, pageID, selector string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_click"}, map[string]any{"pageId": pageID, "clicked": true})
+}
+func (f *fakeBrowserHandler) BrowserTypeForMCP(id, expectedName, pageID, selector, text string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_type"}, map[string]any{"pageId": pageID, "typed": true})
+}
+func (f *fakeBrowserHandler) BrowserPressKeyForMCP(id, expectedName, pageID, key string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_press_key"}, map[string]any{"pageId": pageID, "pressed": key})
+}
+func (f *fakeBrowserHandler) BrowserScreenshotForMCP(id, expectedName, pageID string) protocol.Response {
+	return protocol.NewSuccess(protocol.Request{Version: protocol.Version, Command: "browser_screenshot"}, browserScreenshotOutput{})
+}
+
+func TestGetCDPEndpointTool(t *testing.T) {
+	handler := &fakeBrowserHandler{
+		cdpPort:     54321,
+		cdpEndpoint: "ws://127.0.0.1:54321/devtools/browser/abc12345",
+	}
+	session, closeSession := connectClient(t, handler)
+	defer closeSession()
+
+	result := callTool(t, session, "scopenest_get_cdp_endpoint", map[string]any{
+		"id":           testContainerID,
+		"expectedName": "Target - User A",
+	})
+	if result.IsError {
+		t.Fatalf("get_cdp_endpoint failed: %#v", result.Content)
+	}
+
+	// Stale identity check
+	mismatch := callTool(t, session, "scopenest_get_cdp_endpoint", map[string]any{
+		"id":           testContainerID,
+		"expectedName": "Wrong Name",
+	})
+	if !mismatch.IsError {
+		t.Fatal("get_cdp_endpoint accepted mismatched container name")
+	}
+
+	// Missing arguments
+	invalid := callTool(t, session, "scopenest_get_cdp_endpoint", map[string]any{
+		"id": testContainerID,
+	})
+	if !invalid.IsError {
+		t.Fatal("get_cdp_endpoint accepted missing expectedName")
+	}
 }

@@ -32,12 +32,25 @@ type createContainerInput struct {
 	AutomationEnabled     bool   `json:"automationEnabled,omitempty"`
 }
 
+type updateContainerInput struct {
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Color                 string `json:"color"`
+	Icon                  string `json:"icon,omitempty"`
+	BrowserType           string `json:"browserType"`
+	NetworkMode           string `json:"networkMode"`
+	ProxyProfileID        string `json:"proxyProfileId,omitempty"`
+	EnvironmentTemplateID string `json:"environmentTemplateId,omitempty"`
+	AutomationEnabled     bool   `json:"automationEnabled,omitempty"`
+}
+
 var mcpBrowserTypes = []string{"chrome", "chromium", "edge", "brave"}
 
 type launchContainerInput struct {
-	ID           string `json:"id"`
-	ExpectedName string `json:"expectedName"`
-	URL          string `json:"url,omitempty"`
+	ID                string `json:"id"`
+	ExpectedName      string `json:"expectedName"`
+	URL               string `json:"url,omitempty"`
+	AutomationEnabled *bool  `json:"automationEnabled,omitempty"`
 }
 
 type closeContainerInput struct {
@@ -162,11 +175,19 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 	}, validateCreate)
 
 	addTool(server, toolSpec{
+		name: "scopenest_update_container", command: "update_container",
+		description: "Update an existing ScopeNest browser container's metadata, browser selection, network mode, and automation settings.",
+		schema:      updateSchema(), annotations: mutating,
+	}, func(in updateContainerInput) protocol.Response {
+		return adapter.Execute("update_container", in)
+	}, validateUpdate)
+
+	addTool(server, toolSpec{
 		name: "scopenest_launch_container", command: "launch_container",
 		description: "Launch a standard-browser container at an optional authorized HTTP(S) URL. Custom-browser containers require a human launch. Use only for systems the user owns or is authorized to test. Call scopenest_get_container_readiness first for proxy/template containers. This opens a browser; it does not browse, click, inspect page content, or perform testing.",
 		schema:      launchSchema(), annotations: launch,
 	}, func(in launchContainerInput) protocol.Response {
-		return adapter.LaunchForMCP(in.ID, in.ExpectedName, in.URL)
+		return adapter.LaunchForMCP(in.ID, in.ExpectedName, in.URL, in.AutomationEnabled)
 	}, validateLaunch)
 
 	addTool(server, toolSpec{
@@ -184,6 +205,14 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 		description: "Return whether the explicitly named running container has its opted-in, local-only automation bridge ready. Runtime endpoint details are not exposed.",
 		schema:      browserIdentitySchema(), annotations: readOnly,
 	}, func(in browserIdentityInput) protocol.Response { return adapter.BrowserStatus(in.ID, in.ExpectedName) }, validateBrowserIdentity)
+
+	addTool(server, toolSpec{
+		name: "scopenest_get_cdp_endpoint", command: "get_cdp_endpoint",
+		description: "Return the local loopback Chrome DevTools Protocol (CDP) WebSocket and HTTP endpoints for an explicitly named running container with automation enabled. External tools like Playwright or Puppeteer can connect to this endpoint.",
+		schema:      browserIdentitySchema(), annotations: readOnly,
+	}, func(in browserIdentityInput) protocol.Response {
+		return adapter.BrowserCDPEndpoint(in.ID, in.ExpectedName)
+	}, validateBrowserIdentity)
 
 	addTool(server, toolSpec{
 		name: "scopenest_browser_list_pages", command: "browser_list_pages",
@@ -328,6 +357,22 @@ func validateCreate(in createContainerInput) error {
 	return nil
 }
 
+func validateUpdate(in updateContainerInput) error {
+	if security.ValidateID(in.ID) != nil {
+		return toolValidationError{"INVALID_CONTAINER_ID"}
+	}
+	return validateCreate(createContainerInput{
+		Name:                  in.Name,
+		Color:                 in.Color,
+		Icon:                  in.Icon,
+		BrowserType:           in.BrowserType,
+		NetworkMode:           in.NetworkMode,
+		ProxyProfileID:        in.ProxyProfileID,
+		EnvironmentTemplateID: in.EnvironmentTemplateID,
+		AutomationEnabled:     in.AutomationEnabled,
+	})
+}
+
 func isMCPBrowserType(browserType string) bool {
 	for _, supported := range mcpBrowserTypes {
 		if browserType == supported {
@@ -462,6 +507,20 @@ func createSchema() map[string]any {
 	}, "name", "color", "browserType", "networkMode")
 }
 
+func updateSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"id":                    idProperty("ScopeNest container ID to update"),
+		"name":                  map[string]any{"type": "string", "description": "Container name", "minLength": 1, "maxLength": 80},
+		"color":                 map[string]any{"type": "string", "description": "Six-digit hexadecimal container color", "pattern": "^#[0-9a-fA-F]{6}$"},
+		"icon":                  map[string]any{"type": "string", "description": "Optional short container icon", "maxLength": 8},
+		"browserType":           map[string]any{"type": "string", "description": "Standard Chromium-family browser type resolved from locally detected installations", "enum": stringsToAny(mcpBrowserTypes)},
+		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
+		"proxyProfileId":        idProperty("Existing proxy profile ID when networkMode is proxy"),
+		"environmentTemplateId": idProperty("Existing environment template ID when networkMode is template"),
+		"automationEnabled":     map[string]any{"type": "boolean", "description": "Explicitly allow localhost-only browser automation for this container when launched"},
+	}, "id", "name", "color", "browserType", "networkMode")
+}
+
 func browserIdentitySchema() map[string]any {
 	return objectSchema(map[string]any{"id": idProperty("ScopeNest container ID"), "expectedName": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}}, "id", "expectedName")
 }
@@ -492,9 +551,10 @@ func browserKeySchema() map[string]any {
 
 func launchSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"id":           idProperty("ScopeNest container ID to launch"),
-		"expectedName": map[string]any{"type": "string", "description": "Exact current container name used as an identity confirmation", "minLength": 1, "maxLength": 80},
-		"url":          map[string]any{"type": "string", "description": "Optional absolute HTTP(S) URL without credentials", "maxLength": 8192},
+		"id":                idProperty("ScopeNest container ID to launch"),
+		"expectedName":      map[string]any{"type": "string", "description": "Exact current container name used as an identity confirmation", "minLength": 1, "maxLength": 80},
+		"url":               map[string]any{"type": "string", "description": "Optional absolute HTTP(S) URL without credentials", "maxLength": 8192},
+		"automationEnabled": map[string]any{"type": "boolean", "description": "Optional override to enable or disable local browser automation for this launch session"},
 	}, "id", "expectedName")
 }
 

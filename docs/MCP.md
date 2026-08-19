@@ -48,7 +48,7 @@ ScopeNest MCP cannot:
 - directly dump cookies, browser profiles, credentials, password stores, or arbitrary local browsing state;
 - execute arbitrary commands, executables, Chromium arguments, or ScopeNest commands;
 - execute arbitrary CDP methods or arbitrary JavaScript;
-- delete or update containers;
+- delete containers;
 - create, update, or delete proxy profiles or environment templates;
 - import, delete, install, remove, or acknowledge certificate trust;
 - access arbitrary files;
@@ -136,7 +136,7 @@ codex mcp list
 codex mcp get scopenest
 ```
 
-Restart Codex Desktop after changing MCP configuration. In a new task, ask Codex to list the available ScopeNest tools or call `scopenest_ping`. Tool discovery should show exactly the 20 tools below.
+Restart Codex Desktop after changing MCP configuration. In a new task, ask Codex to list the available ScopeNest tools or call `scopenest_ping`. Tool discovery should show exactly the 22 tools below.
 
 Codex stores durable MCP configuration in its shared `config.toml`. The equivalent generic Codex TOML shape is:
 
@@ -179,9 +179,11 @@ Configuration keys and restart behavior are client-specific. ScopeNest has not b
 | `scopenest_get_container_readiness` | `get_container_readiness` | Effective network, listener, certificate states, warnings, and readiness |
 | `scopenest_create_container` | `create_container` | Create a persistent isolated profile |
 | `scopenest_create_temporary_container` | `create_temporary_container` | Create a disposable profile cleaned after safe owned-process exit |
+| `scopenest_update_container` | `update_container` | Update container metadata, browser selection, network mode, and automation settings |
 | `scopenest_launch_container` | `launch_container` | Identity-confirmed browser launch at an optional HTTP(S) URL |
 | `scopenest_close_container` | `close_container` | Identity-confirmed close, limited to this MCP process's owned process tree |
 | `scopenest_browser_status` | bounded host method | Confirm automation readiness without exposing the endpoint |
+| `scopenest_get_cdp_endpoint` | bounded host method | Return local loopback CDP WebSocket and HTTP endpoints for external tools (Playwright/Puppeteer) |
 | `scopenest_browser_list_pages` | bounded host method | List opaque pages in one explicit container |
 | `scopenest_browser_open_page` | bounded host method | Open an HTTP(S) URL in a new page |
 | `scopenest_browser_navigate` | bounded host method | Navigate one container-scoped page |
@@ -191,7 +193,7 @@ Configuration keys and restart behavior are client-specific. ScopeNest has not b
 | `scopenest_browser_press_key` | bounded host method | Send one allowlisted navigation/confirmation key |
 | `scopenest_browser_screenshot` | bounded host method | Return a PNG screenshot capped at 4 MiB |
 
-Read-only tools are annotated read-only, idempotent, and closed-world. Create and page-interaction tools are non-idempotent. Close is annotated destructive and closed-world. Launch, open-page, and navigation tools are conservatively annotated destructive, non-idempotent, and open-world because opening an HTTP(S) URL can contact an external entity and cause side effects.
+Read-only tools are annotated read-only, idempotent, and closed-world. Create, update, and page-interaction tools are non-idempotent. Close is annotated destructive and closed-world. Launch, open-page, and navigation tools are conservatively annotated destructive, non-idempotent, and open-world because opening an HTTP(S) URL can contact an external entity and cause side effects.
 
 ### Examples
 
@@ -214,27 +216,77 @@ Create a direct Chrome container. MCP creation accepts only `chrome`, `chromium`
 }
 ```
 
-Launch requires the exact current name as an identity and staleness check:
+Update an existing container's properties, network mode, or automation settings:
+
+```json
+{
+  "id": "0123456789abcdef0123456789abcdef",
+  "name": "Target - User A Updated",
+  "color": "#725cff",
+  "icon": "A",
+  "browserType": "chrome",
+  "networkMode": "direct",
+  "automationEnabled": true
+}
+```
+
+Launch requires the exact current name as an identity and staleness check (with optional `url` and optional `automationEnabled` session override):
 
 ```json
 {
   "id": "0123456789abcdef0123456789abcdef",
   "expectedName": "Target - User A",
-  "url": "https://example.com/authorized-test"
+  "url": "https://example.com/authorized-test",
+  "automationEnabled": true
 }
 ```
 
-`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. The expected name and standard browser type are checked against the current container record while the shared store lock is held in the same transaction that creates the launch reservation. The host also validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, and duplicate-launch state.
+`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. If `automationEnabled` is provided in the launch request, it overrides the stored container preference for that launch session without mutating the persistent database record. The expected name and standard browser type are checked against the current container record while the shared store lock is held in the same transaction that creates the launch reservation. The host also validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, and duplicate-launch state.
 
 After launch, Codex controls that exact isolated identity through the same configured ScopeNest MCP server; no second server or dynamic MCP reconfiguration is needed:
 
 ```text
 scopenest_browser_status({id, expectedName})
+scopenest_get_cdp_endpoint({id, expectedName})
 scopenest_browser_list_pages({id, expectedName})
 scopenest_browser_open_page({id, expectedName, url})
 scopenest_browser_snapshot({id, expectedName, pageId})
 scopenest_browser_click({id, expectedName, pageId, selector})
 scopenest_browser_type({id, expectedName, pageId, selector, text})
+```
+
+External tools (such as Playwright, Puppeteer, or Chrome DevTools MCP) can retrieve the active loopback CDP endpoint via `scopenest_get_cdp_endpoint`:
+
+```json
+{
+  "id": "0123456789abcdef0123456789abcdef",
+  "expectedName": "Target - User A"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "command": "get_cdp_endpoint",
+  "data": {
+    "port": 54321,
+    "wsEndpoint": "ws://127.0.0.1:54321/devtools/browser/abcdef...",
+    "httpEndpoint": "http://127.0.0.1:54321"
+  }
+}
+```
+
+Playwright connect example:
+
+```javascript
+import { chromium } from "playwright";
+
+const browser = await chromium.connectOverCDP(data.wsEndpoint);
+const context = browser.contexts()[0];
+const page = context.pages()[0] || await context.newPage();
+await page.goto("https://example.com");
 ```
 
 Repeat the calls with User B's different container ID/name to operate its different managed profile. Page IDs are opaque runtime references and remain valid only for the container/runtime that issued them. Closing the browser clears them. Disable `automationEnabled` in the ScopeNest UI and relaunch to remove remote-debugging behavior.

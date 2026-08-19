@@ -46,7 +46,7 @@ func TestRealBrowserAutomationKeepsTwoTemporaryIdentitiesSeparate(t *testing.T) 
 	a := create("Acceptance A")
 	b := create("Acceptance B")
 	for _, container := range []model.Container{a, b} {
-		response := h.LaunchForMCP(container.ID, container.Name, server.URL)
+		response := h.LaunchForMCP(container.ID, container.Name, server.URL, nil)
 		if !response.Success {
 			t.Fatalf("launch %s: %#v", container.Name, response)
 		}
