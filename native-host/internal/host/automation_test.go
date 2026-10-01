@@ -68,8 +68,11 @@ func TestAutomationEndpointWaitRetriesTransientConnectorFailure(t *testing.T) {
 		profile,
 		process,
 		250*time.Millisecond,
-		func(port int, endpoint string) (*automationRuntime, error) {
+		func(port int, endpoint string, attemptTimeout time.Duration) (*automationRuntime, error) {
 			attempts++
+			if attemptTimeout <= 0 || attemptTimeout > 250*time.Millisecond {
+				t.Fatalf("connector timeout = %s, want within startup budget", attemptTimeout)
+			}
 			if port != 43123 || endpoint != "ws://127.0.0.1:43123/devtools/browser/abcdef" {
 				t.Fatalf("connector received (%d, %q)", port, endpoint)
 			}
