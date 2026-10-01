@@ -4,11 +4,51 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 )
+
+func TestDetectRecognizesLinuxStableBrowserExecutables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux browser command detection is not used on Windows")
+	}
+
+	dir := t.TempDir()
+	expected := map[string]string{
+		"google-chrome-stable":   "chrome",
+		"microsoft-edge-stable":  "edge",
+		"brave-browser-stable":   "brave",
+	}
+	for name := range expected {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	detected := Detect()
+	if len(detected) != len(expected) {
+		t.Fatalf("Detect() returned %d candidates, want %d: %#v", len(detected), len(expected), detected)
+	}
+
+	byName := make(map[string]Candidate, len(detected))
+	for _, candidate := range detected {
+		byName[filepath.Base(candidate.Path)] = candidate
+	}
+	for executable, browserType := range expected {
+		candidate, ok := byName[executable]
+		if !ok {
+			t.Fatalf("Detect() did not find %q: %#v", executable, detected)
+		}
+		if candidate.Type != browserType {
+			t.Fatalf("Detect() type for %q = %q, want %q", executable, candidate.Type, browserType)
+		}
+	}
+}
 
 func TestWindowLabel(t *testing.T) {
 	tests := []struct {
