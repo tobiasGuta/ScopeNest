@@ -392,6 +392,36 @@ func TestAutomationInitializationFailureTerminatesProcessAndRollsBackReservation
 	}
 }
 
+func TestTemporaryAutomationInitializationFailureCleansContainer(t *testing.T) {
+	h, st, executable := testHost(t)
+	process := newControlledProcess(os.Getpid(), false)
+	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
+	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
+		return nil, errors.New("test initialization failure")
+	}
+	created := h.Handle(request(t, "create_temporary_container", containerInput{Name: "Temporary automation failure", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !created.Success {
+		t.Fatalf("temporary automation container create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	response := h.Handle(request(t, "launch_container", launchInput{ID: container.ID}))
+	if response.Success || response.ErrorCode != "AUTOMATION_INITIALIZATION_FAILED" {
+		t.Fatalf("automation failure response = %#v", response)
+	}
+	waitForSignal(t, process.terminated, "failed temporary automation process termination")
+
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 0 {
+		t.Fatalf("failed temporary automation launch left metadata: %#v", db)
+	}
+	if _, err := os.Stat(container.ProfilePath); !os.IsNotExist(err) {
+		t.Fatalf("failed temporary automation launch left profile: %v", err)
+	}
+}
+
 func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 	h, st, executable := testHost(t)
 	process := newControlledProcess(os.Getpid(), false)
