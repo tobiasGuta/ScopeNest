@@ -50,6 +50,45 @@ func TestAutomationEndpointWaitHandlesMissingEmptyTimeoutAndProcessExit(t *testi
 	}
 }
 
+func TestAutomationEndpointWaitRetriesTransientConnectorFailure(t *testing.T) {
+	profile := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(profile, "DevToolsActivePort"),
+		[]byte("43123\n/devtools/browser/abcdef\n"),
+		0600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	process := newControlledProcess(1003, false)
+	attempts := 0
+	expected := &automationRuntime{}
+	runtime, err := waitForAutomationEndpointWithConnector(
+		profile,
+		process,
+		250*time.Millisecond,
+		func(port int, endpoint string) (*automationRuntime, error) {
+			attempts++
+			if port != 43123 || endpoint != "ws://127.0.0.1:43123/devtools/browser/abcdef" {
+				t.Fatalf("connector received (%d, %q)", port, endpoint)
+			}
+			if attempts < 3 {
+				return nil, errors.New("connection not ready yet")
+			}
+			return expected, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("transient connector failure was not retried: %v", err)
+	}
+	if runtime != expected {
+		t.Fatalf("returned runtime = %#v, want %#v", runtime, expected)
+	}
+	if attempts != 3 {
+		t.Fatalf("connector attempts = %d, want 3", attempts)
+	}
+}
+
 func TestOpaquePageReferencesCannotCrossAutomationRuntimes(t *testing.T) {
 	pageID, err := security.NewID()
 	if err != nil {
