@@ -706,6 +706,56 @@ func TestTemporaryCleanupRemovesProfileAndMetadata(t *testing.T) {
 	}
 }
 
+func TestStartupCleanupDoesNotDeleteCurrentSessionTemporaryContainer(t *testing.T) {
+	h, st, executable := testHost(t)
+
+	oldCreated := h.Handle(request(t, "create_temporary_container", containerInput{
+		Name: "Old temporary", Color: "#d28b26", BrowserType: "custom", BrowserExecutable: executable,
+	}))
+	if !oldCreated.Success {
+		t.Fatalf("old temporary create failed: %#v", oldCreated)
+	}
+	oldContainer := oldCreated.Data.(model.Container)
+
+	freshCreated := h.Handle(request(t, "create_temporary_container", containerInput{
+		Name: "Fresh temporary", Color: "#725cff", BrowserType: "custom", BrowserExecutable: executable,
+	}))
+	if !freshCreated.Success {
+		t.Fatalf("fresh temporary create failed: %#v", freshCreated)
+	}
+	freshContainer := freshCreated.Data.(model.Container)
+
+	if err := st.Update(func(db *model.Database) error {
+		for i := range db.Containers {
+			if db.Containers[i].ID == oldContainer.ID {
+				db.Containers[i].CreatedAt = h.startupCleanupCutoff.Add(-time.Hour)
+				return nil
+			}
+		}
+		return errors.New("old temporary container missing")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.startupCleanup(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.Containers) != 1 || db.Containers[0].ID != freshContainer.ID {
+		t.Fatalf("startup cleanup removed current-session temporary or retained old temporary: %#v", db.Containers)
+	}
+	if _, err := os.Stat(oldContainer.ProfilePath); !os.IsNotExist(err) {
+		t.Fatalf("old temporary profile remains after startup cleanup: %v", err)
+	}
+	if _, err := os.Stat(freshContainer.ProfilePath); err != nil {
+		t.Fatalf("current-session temporary profile was removed by startup cleanup: %v", err)
+	}
+}
+
 func TestTemporaryCleanupDefersWhenProfileLockExists(t *testing.T) {
 	h, st, executable := testHost(t)
 	created := h.Handle(request(t, "create_temporary_container", containerInput{Name: "Locked", Color: "#d28b26", BrowserType: "custom", BrowserExecutable: executable}))
