@@ -129,6 +129,23 @@ Linux:
 codex mcp add scopenest -- "${XDG_DATA_HOME:-$HOME/.local/share}/scopenest/mcp/scopenest-mcp"
 ```
 
+On Linux, a visible Chromium launch also needs the desktop-session environment that owns the current Wayland/X11 display. Codex can start local stdio MCP servers with a filtered environment, so add these variable names to the ScopeNest server entry in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.scopenest]
+command = "/home/YOUR_USER/.local/share/scopenest/mcp/scopenest-mcp"
+env_vars = [
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XDG_SESSION_TYPE",
+  "XDG_RUNTIME_DIR",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XAUTHORITY",
+]
+```
+
+Do not hard-code the variable values; graphical-session values such as `XAUTHORITY` may change between logins. Start Codex from the active desktop session and restart it after changing MCP configuration. Codex's `env_vars` entries forward matching variables from the local environment to a stdio MCP server.
+
 Verify registration:
 
 ```text
@@ -352,7 +369,7 @@ The browser was launched by the extension, another MCP server process, or an ear
 
 ### `AUTOMATION_INITIALIZATION_FAILED`
 
-ScopeNest closed the just-launched browser because its ephemeral DevTools endpoint did not become ready within the bounded startup window. A managed Chrome installation can intentionally disable this capability with the [`RemoteDebuggingAllowed`](https://chromeenterprise.google/policies/remote-debugging-allowed/) enterprise policy; ScopeNest does not bypass that policy. Disable automation for the container or ask the device administrator whether local remote debugging is permitted.
+ScopeNest closed the just-launched browser because its ephemeral DevTools endpoint did not become ready within the bounded startup window. On Linux, first confirm the MCP process inherited the active desktop session's `DISPLAY`/`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XDG_SESSION_TYPE`, `DBUS_SESSION_BUS_ADDRESS`, and (when present) `XAUTHORITY`; see the Codex Linux registration example above. A managed Chrome installation can also intentionally disable this capability with the [`RemoteDebuggingAllowed`](https://chromeenterprise.google/policies/remote-debugging-allowed/) enterprise policy; ScopeNest does not bypass that policy. Disable automation for the container or ask the device administrator whether local remote debugging is permitted.
 
 ### `PROXY_LISTENER_UNAVAILABLE` or readiness warnings
 
