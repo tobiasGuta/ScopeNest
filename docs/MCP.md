@@ -377,7 +377,7 @@ Start the existing loopback proxy listener, correct the proxy through the human-
 
 ### Temporary cleanup remains pending
 
-Close all windows using that profile. Startup cleanup runs asynchronously once after the first valid MCP command and uses the existing safe cleanup and profile-lock checks.
+Close all windows using that profile. Startup cleanup runs asynchronously once after the first valid MCP command and uses the existing safe cleanup and profile-lock checks. It only reaps eligible temporary containers that predate the current host process, so a temporary container created by the current MCP session is not deleted by startup cleanup before it can be launched.
 
 ## Removal
 
