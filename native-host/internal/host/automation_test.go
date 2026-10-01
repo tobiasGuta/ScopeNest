@@ -1,6 +1,7 @@
 package host
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
