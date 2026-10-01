@@ -777,6 +777,10 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 	if !launched.Success {
 		t.Fatalf("launch: %#v", launched)
 	}
+	// Let the adapter's one-time startup cleanup finish while the owned profile
+	// is still locked. That keeps close reconciliation attributable to the
+	// process watcher instead of racing startup cleanup during test teardown.
+	waitForStartupCleanup(t, ownerHost)
 	if launchSpec.Identity != (browser.VisualIdentity{Name: "Owned", Color: "#725cff"}) {
 		t.Fatalf("MCP launch did not use the shared host visual identity path: %#v", launchSpec.Identity)
 	}
@@ -795,6 +799,7 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 	if !process.Running() {
 		t.Fatal("non-owner terminated the process")
 	}
+	waitForStartupCleanup(t, nonOwnerHost)
 
 	closed := owner.ExecuteWithIdentity("close_container", container.ID, container.Name, struct {
 		ID string `json:"id"`
@@ -806,8 +811,6 @@ func TestProcessOwnershipBoundaryThroughAdapter(t *testing.T) {
 		t.Fatal("owner did not terminate its process")
 	}
 	waitForStoppedContainer(t, st, container.ID)
-	waitForStartupCleanup(t, ownerHost)
-	waitForStartupCleanup(t, nonOwnerHost)
 }
 
 func TestPersistedPIDNeverGrantsCloseAuthority(t *testing.T) {
