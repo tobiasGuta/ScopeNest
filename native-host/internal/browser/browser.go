@@ -148,10 +148,13 @@ func Detect() []Candidate {
 	} else {
 		commands := []Candidate{
 			{Type: "chrome", Name: "Google Chrome", Path: "google-chrome"},
+			{Type: "chrome", Name: "Google Chrome", Path: "google-chrome-stable"},
 			{Type: "chromium", Name: "Chromium", Path: "chromium"},
 			{Type: "chromium", Name: "Chromium", Path: "chromium-browser"},
 			{Type: "edge", Name: "Microsoft Edge", Path: "microsoft-edge"},
+			{Type: "edge", Name: "Microsoft Edge", Path: "microsoft-edge-stable"},
 			{Type: "brave", Name: "Brave", Path: "brave-browser"},
+			{Type: "brave", Name: "Brave", Path: "brave-browser-stable"},
 		}
 		for _, candidate := range commands {
 			if path, err := exec.LookPath(candidate.Path); err == nil {
