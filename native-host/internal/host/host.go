@@ -694,6 +694,9 @@ func (h *Host) launchWithPolicy(in launchInput, policy launchPolicy) (model.Cont
 			_ = process.Terminate()
 			_ = process.Wait()
 			releaseReservation()
+			if c.Temporary {
+				_, _ = h.deleteTemporary(c.ID)
+			}
 			return model.Container{}, fail("AUTOMATION_INITIALIZATION_FAILED", "automation endpoint did not become ready")
 		}
 	}
