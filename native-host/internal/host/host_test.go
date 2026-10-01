@@ -396,6 +396,11 @@ func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 	h, _, executable := testHost(t)
 	process := newControlledProcess(os.Getpid(), false)
 	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
+	watchDone := make(chan struct{})
+	h.watcher = func(id string, process browser.Process) {
+		h.watch(id, process)
+		close(watchDone)
+	}
 	closed := make(chan struct{})
 	var closeOnce sync.Once
 	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
@@ -416,6 +421,7 @@ func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 		t.Fatalf("automation close failed: %#v", response)
 	}
 	waitForSignal(t, closed, "automation runtime cancellation")
+	waitForSignal(t, watchDone, "container lifecycle watcher completion")
 	h.mu.Lock()
 	runtime := h.automations[container.ID]
 	h.mu.Unlock()
