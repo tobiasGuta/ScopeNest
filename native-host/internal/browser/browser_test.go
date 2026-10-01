@@ -50,6 +50,32 @@ func TestDetectRecognizesLinuxStableBrowserExecutables(t *testing.T) {
 	}
 }
 
+func TestDetectPrefersPrimaryLinuxBrowserAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux browser command detection is not used on Windows")
+	}
+
+	dir := t.TempDir()
+	for _, name := range []string{"google-chrome", "google-chrome-stable"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	detected := Detect()
+	if len(detected) != 1 {
+		t.Fatalf("Detect() returned %d candidates, want 1: %#v", len(detected), detected)
+	}
+	if got := filepath.Base(detected[0].Path); got != "google-chrome" {
+		t.Fatalf("Detect() chose %q, want primary alias google-chrome", got)
+	}
+	if detected[0].Type != "chrome" {
+		t.Fatalf("Detect() type = %q, want chrome", detected[0].Type)
+	}
+}
+
 func TestWindowLabel(t *testing.T) {
 	tests := []struct {
 		name     string
