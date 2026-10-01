@@ -473,7 +473,7 @@ func (r *automationRuntime) pageContext(pageID string) (context.Context, context
 	r.mu.Unlock()
 
 	pageCtx.once.Do(func() {
-		pageCtx.err = runInitialChromedp(pageCtx.ctx)
+		pageCtx.err = runInitialChromedp(pageCtx.ctx, automationActionTimeout)
 		if pageCtx.err != nil {
 			pageCtx.cancel()
 		}
