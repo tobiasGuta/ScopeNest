@@ -375,8 +375,26 @@ func (s *Store) ProfileInUse(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Chromium creates these user-data-root markers while a profile instance owns it.
-	for _, marker := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie"} {
+	lockPath, err := security.ResolveWithin(s.root, filepath.Join(profile, "SingletonLock"))
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Lstat(lockPath); err == nil {
+		stale, err := processSingletonLockDefinitelyStale(lockPath)
+		if err != nil {
+			return false, fmt.Errorf("inspect browser profile lock: %w", err)
+		}
+		if stale {
+			return false, nil
+		}
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect browser profile lock: %w", err)
+	}
+
+	// Keep the conservative marker fallback for platforms or startup/shutdown
+	// windows where Chromium's primary SingletonLock is not present.
+	for _, marker := range []string{"SingletonSocket", "SingletonCookie"} {
 		path, err := security.ResolveWithin(s.root, filepath.Join(profile, marker))
 		if err != nil {
 			return false, err
