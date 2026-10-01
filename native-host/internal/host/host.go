@@ -57,6 +57,7 @@ type Host struct {
 	platform               string
 	proxyDial              func(string, string, time.Duration) (net.Conn, error)
 	startupCleanup         func() error
+	startupCleanupCutoff   time.Time
 	startupCleanupOnce     sync.Once
 	startupCleanupMu       sync.RWMutex
 	startupCleanupMetadata startupCleanupMetadata
@@ -115,6 +116,7 @@ type validatePathInput struct {
 }
 
 func New(st *store.Store, launcher browser.Launcher, certManager *certstore.Manager) *Host {
+	startupCleanupCutoff := time.Now().UTC()
 	h := &Host{
 		store:                  st,
 		certManager:            certManager,
@@ -125,6 +127,7 @@ func New(st *store.Store, launcher browser.Launcher, certManager *certstore.Mana
 		now:                    func() time.Time { return time.Now().UTC() },
 		platform:               runtime.GOOS,
 		proxyDial:              net.DialTimeout,
+		startupCleanupCutoff:   startupCleanupCutoff,
 		startupCleanupMetadata: startupCleanupMetadata{State: "pending"},
 	}
 	h.watcher = h.watch
@@ -138,7 +141,7 @@ func New(st *store.Store, launcher browser.Launcher, certManager *certstore.Mana
 				return err
 			}
 		}
-		_, err := h.cleanup()
+		_, err := h.cleanupStartupTemporary()
 		return err
 	}
 	return h
@@ -1029,6 +1032,15 @@ func (h *Host) deleteTemporary(id string) (bool, error) {
 }
 
 func (h *Host) cleanup() (map[string]any, error) {
+	return h.cleanupTemporary(nil)
+}
+
+func (h *Host) cleanupStartupTemporary() (map[string]any, error) {
+	cutoff := h.startupCleanupCutoff
+	return h.cleanupTemporary(&cutoff)
+}
+
+func (h *Host) cleanupTemporary(createdBefore *time.Time) (map[string]any, error) {
 	if err := h.reconcile(); err != nil {
 		return nil, err
 	}
@@ -1038,13 +1050,17 @@ func (h *Host) cleanup() (map[string]any, error) {
 	}
 	cleaned, pending := []string{}, []string{}
 	for _, c := range db.Containers {
-		if c.Temporary && c.State == model.StateStopped && !c.Running {
-			ok, err := h.deleteTemporary(c.ID)
-			if err == nil && ok {
-				cleaned = append(cleaned, c.ID)
-			} else {
-				pending = append(pending, c.ID)
-			}
+		if !c.Temporary || c.State != model.StateStopped || c.Running {
+			continue
+		}
+		if createdBefore != nil && !c.CreatedAt.Before(*createdBefore) {
+			continue
+		}
+		ok, err := h.deleteTemporary(c.ID)
+		if err == nil && ok {
+			cleaned = append(cleaned, c.ID)
+		} else {
+			pending = append(pending, c.ID)
 		}
 	}
 	return map[string]any{"cleaned": cleaned, "pending": pending}, nil
