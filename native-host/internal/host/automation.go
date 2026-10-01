@@ -96,7 +96,7 @@ func removeStaleDevToolsActivePort(profile string) error {
 	return os.Remove(path)
 }
 
-type automationConnector func(int, string) (*automationRuntime, error)
+type automationConnector func(int, string, time.Duration) (*automationRuntime, error)
 
 func waitForAutomationEndpoint(profile string, process browserpkg.Process, timeout time.Duration) (*automationRuntime, error) {
 	return waitForAutomationEndpointWithConnector(profile, process, timeout, connectAutomationRuntime)
@@ -119,7 +119,15 @@ func waitForAutomationEndpointWithConnector(profile string, process browserpkg.P
 			if info.Size() > 0 && readErr == nil {
 				port, endpoint, parseErr := parseDevToolsActivePort(data)
 				if parseErr == nil {
-					runtime, connectErr := connector(port, endpoint)
+					remaining := time.Until(deadline)
+					if remaining <= 0 {
+						break
+					}
+					attemptTimeout := automationActionTimeout
+					if remaining < attemptTimeout {
+						attemptTimeout = remaining
+					}
+					runtime, connectErr := connector(port, endpoint, attemptTimeout)
 					if connectErr == nil {
 						return runtime, nil
 					}
@@ -167,12 +175,12 @@ func isSafeDevToolsBrowserID(value string) bool {
 	return true
 }
 
-func connectAutomationRuntime(port int, endpoint string) (*automationRuntime, error) {
+func connectAutomationRuntime(port int, endpoint string, timeout time.Duration) (*automationRuntime, error) {
 	allocatorCtx, cancelAllocator := chromedp.NewRemoteAllocator(context.Background(), endpoint)
 	ctx, cancel := chromedp.NewContext(allocatorCtx)
 	runtime := &automationRuntime{endpoint: endpoint, port: port, ctx: ctx, pages: map[string]target.ID{}, contexts: map[target.ID]*automationPageContext{}}
 	runtime.cancel = func() { cancel(); cancelAllocator() }
-	err := runInitialChromedp(ctx, chromedp.ActionFunc(func(actionCtx context.Context) error {
+	err := runInitialChromedp(ctx, timeout, chromedp.ActionFunc(func(actionCtx context.Context) error {
 		_, _, _, _, _, err := browser.GetVersion().Do(actionCtx)
 		return err
 	}))
@@ -183,12 +191,12 @@ func connectAutomationRuntime(port int, endpoint string) (*automationRuntime, er
 	return runtime, nil
 }
 
-func runInitialChromedp(ctx context.Context, actions ...chromedp.Action) error {
+func runInitialChromedp(ctx context.Context, timeout time.Duration, actions ...chromedp.Action) error {
 	ready := make(chan error, 1)
 	go func() {
 		ready <- chromedp.Run(ctx, actions...)
 	}()
-	timer := time.NewTimer(automationActionTimeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case err := <-ready:
