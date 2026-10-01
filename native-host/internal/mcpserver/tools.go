@@ -501,7 +501,7 @@ func idSchema(description string) map[string]any {
 func createSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"name":                  map[string]any{"type": "string", "description": "Container name", "minLength": 1, "maxLength": 80},
-		"color":                 map[string]any{"type": "string", "description": "Six-digit hexadecimal container color", "pattern": "^#[0-9a-fA-F]{6}$"},
+		"color":                 map[string]any{"type": "string", "description": "Container color in exact #RRGGBB form, including the leading # (example: #3B82F6)", "pattern": "^#[0-9a-fA-F]{6}$"},
 		"icon":                  map[string]any{"type": "string", "description": "Optional short container icon", "maxLength": 8},
 		"browserType":           map[string]any{"type": "string", "description": "Standard Chromium-family browser type resolved from locally detected installations", "enum": stringsToAny(mcpBrowserTypes)},
 		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
@@ -516,7 +516,7 @@ func updateSchema() map[string]any {
 		"id":                    idProperty("ScopeNest container ID to update"),
 		"expectedName":          map[string]any{"type": "string", "description": "Exact current container name used as an identity confirmation", "minLength": 1, "maxLength": 80},
 		"name":                  map[string]any{"type": "string", "description": "New container name", "minLength": 1, "maxLength": 80},
-		"color":                 map[string]any{"type": "string", "description": "Six-digit hexadecimal container color", "pattern": "^#[0-9a-fA-F]{6}$"},
+		"color":                 map[string]any{"type": "string", "description": "Container color in exact #RRGGBB form, including the leading # (example: #3B82F6)", "pattern": "^#[0-9a-fA-F]{6}$"},
 		"icon":                  map[string]any{"type": "string", "description": "Optional short container icon", "maxLength": 8},
 		"browserType":           map[string]any{"type": "string", "description": "Standard Chromium-family browser type resolved from locally detected installations", "enum": stringsToAny(mcpBrowserTypes)},
 		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
