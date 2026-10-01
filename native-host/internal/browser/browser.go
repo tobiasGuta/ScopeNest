@@ -146,19 +146,35 @@ func Detect() []Candidate {
 			add("brave", "Brave", filepath.Join(base, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"))
 		}
 	} else {
-		commands := []Candidate{
-			{Type: "chrome", Name: "Google Chrome", Path: "google-chrome"},
-			{Type: "chrome", Name: "Google Chrome", Path: "google-chrome-stable"},
-			{Type: "chromium", Name: "Chromium", Path: "chromium"},
-			{Type: "chromium", Name: "Chromium", Path: "chromium-browser"},
-			{Type: "edge", Name: "Microsoft Edge", Path: "microsoft-edge"},
-			{Type: "edge", Name: "Microsoft Edge", Path: "microsoft-edge-stable"},
-			{Type: "brave", Name: "Brave", Path: "brave-browser"},
-			{Type: "brave", Name: "Brave", Path: "brave-browser-stable"},
+		aliases := [][]Candidate{
+			{
+				{Type: "chrome", Name: "Google Chrome", Path: "google-chrome"},
+				{Type: "chrome", Name: "Google Chrome", Path: "google-chrome-stable"},
+			},
+			{
+				{Type: "chromium", Name: "Chromium", Path: "chromium"},
+				{Type: "chromium", Name: "Chromium", Path: "chromium-browser"},
+			},
+			{
+				{Type: "edge", Name: "Microsoft Edge", Path: "microsoft-edge"},
+				{Type: "edge", Name: "Microsoft Edge", Path: "microsoft-edge-stable"},
+			},
+			{
+				{Type: "brave", Name: "Brave", Path: "brave-browser"},
+				{Type: "brave", Name: "Brave", Path: "brave-browser-stable"},
+			},
 		}
-		for _, candidate := range commands {
-			if path, err := exec.LookPath(candidate.Path); err == nil {
+		for _, family := range aliases {
+			for _, candidate := range family {
+				path, err := exec.LookPath(candidate.Path)
+				if err != nil {
+					continue
+				}
+				before := len(result)
 				add(candidate.Type, candidate.Name, path)
+				if len(result) > before {
+					break
+				}
 			}
 		}
 	}
