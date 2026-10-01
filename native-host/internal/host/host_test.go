@@ -393,14 +393,9 @@ func TestAutomationInitializationFailureTerminatesProcessAndRollsBackReservation
 }
 
 func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
-	h, _, executable := testHost(t)
+	h, st, executable := testHost(t)
 	process := newControlledProcess(os.Getpid(), false)
 	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
-	watchDone := make(chan struct{})
-	h.watcher = func(id string, process browser.Process) {
-		h.watch(id, process)
-		close(watchDone)
-	}
 	closed := make(chan struct{})
 	var closeOnce sync.Once
 	h.automationStarter = func(string, browser.Process, time.Duration) (*automationRuntime, error) {
@@ -421,7 +416,9 @@ func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 		t.Fatalf("automation close failed: %#v", response)
 	}
 	waitForSignal(t, closed, "automation runtime cancellation")
-	waitForSignal(t, watchDone, "container lifecycle watcher completion")
+	waitForContainer(t, st, container.ID, func(c model.Container) bool {
+		return c.State == model.StateStopped && !c.Running && c.PID == 0
+	}, "automation close watcher metadata update")
 	h.mu.Lock()
 	runtime := h.automations[container.ID]
 	h.mu.Unlock()
@@ -538,6 +535,9 @@ func TestLaunchContainerAutomationOverrideEnablesSessionAutomationWithoutMutatin
 	if !closed.Success {
 		t.Fatalf("close failed: %#v", closed)
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool {
+		return c.State == model.StateStopped && !c.Running && c.PID == 0
+	}, "automation override close watcher metadata update")
 }
 
 func TestLaunchContainerAutomationOverrideCanDisableSessionAutomation(t *testing.T) {
@@ -591,6 +591,9 @@ func TestLaunchContainerAutomationOverrideCanDisableSessionAutomation(t *testing
 	if !closed.Success {
 		t.Fatalf("close failed: %#v", closed)
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool {
+		return c.State == model.StateStopped && !c.Running && c.PID == 0
+	}, "automation disable close watcher metadata update")
 }
 
 func TestLaunchContainerAutomationOverrideRejectsCustomBrowser(t *testing.T) {
