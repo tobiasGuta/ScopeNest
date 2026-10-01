@@ -31,3 +31,6 @@ fi
 echo "ScopeNest MCP installed at $INSTALLED_BINARY"
 echo "No browser registration or AI-client configuration was changed."
 printf 'Register with Codex: codex mcp add scopenest -- %q\n' "$INSTALLED_BINARY"
+echo "Linux GUI launches also require the MCP client to forward the active desktop-session environment."
+echo "For Codex, add DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS, and XAUTHORITY to mcp_servers.scopenest.env_vars."
+echo "See docs/MCP.md for the exact configuration."
