@@ -96,9 +96,16 @@ func removeStaleDevToolsActivePort(profile string) error {
 	return os.Remove(path)
 }
 
+type automationConnector func(int, string) (*automationRuntime, error)
+
 func waitForAutomationEndpoint(profile string, process browserpkg.Process, timeout time.Duration) (*automationRuntime, error) {
+	return waitForAutomationEndpointWithConnector(profile, process, timeout, connectAutomationRuntime)
+}
+
+func waitForAutomationEndpointWithConnector(profile string, process browserpkg.Process, timeout time.Duration, connector automationConnector) (*automationRuntime, error) {
 	path := filepath.Join(profile, "DevToolsActivePort")
 	deadline := time.Now().Add(timeout)
+	var lastConnectErr error
 	for time.Now().Before(deadline) {
 		if !process.Running() {
 			return nil, errors.New("browser exited before automation became ready")
@@ -112,13 +119,20 @@ func waitForAutomationEndpoint(profile string, process browserpkg.Process, timeo
 			if info.Size() > 0 && readErr == nil {
 				port, endpoint, parseErr := parseDevToolsActivePort(data)
 				if parseErr == nil {
-					return connectAutomationRuntime(port, endpoint)
+					runtime, connectErr := connector(port, endpoint)
+					if connectErr == nil {
+						return runtime, nil
+					}
+					lastConnectErr = connectErr
 				}
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	if lastConnectErr != nil {
+		return nil, fmt.Errorf("timed out connecting to DevTools endpoint: %w", lastConnectErr)
 	}
 	return nil, errors.New("timed out waiting for DevToolsActivePort")
 }
