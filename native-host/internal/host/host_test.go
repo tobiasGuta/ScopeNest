@@ -393,7 +393,7 @@ func TestAutomationInitializationFailureTerminatesProcessAndRollsBackReservation
 }
 
 func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
-	h, _, executable := testHost(t)
+	h, st, executable := testHost(t)
 	process := newControlledProcess(os.Getpid(), false)
 	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
 	closed := make(chan struct{})
@@ -422,6 +422,7 @@ func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 	if runtime != nil {
 		t.Fatal("closed automation runtime remained addressable")
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "automation close watcher")
 }
 
 func TestBrowserCDPEndpointForMCP(t *testing.T) {
@@ -525,6 +526,7 @@ func TestMCPLaunchRequiresExistingAutomationConsent(t *testing.T) {
 	if !closed.Success {
 		t.Fatalf("close failed: %#v", closed)
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "approved MCP launch shutdown")
 }
 
 func TestMCPUpdateCannotGrantOrRestoreAutomationConsent(t *testing.T) {
@@ -645,6 +647,7 @@ func TestLaunchContainerAutomationOverrideCanDisableSessionAutomation(t *testing
 	if !closed.Success {
 		t.Fatalf("close failed: %#v", closed)
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "disabled-automation launch shutdown")
 }
 
 func TestLaunchContainerAutomationOverrideRejectsCustomBrowser(t *testing.T) {
