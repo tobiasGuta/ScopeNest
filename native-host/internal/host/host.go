@@ -105,9 +105,15 @@ type launchInput struct {
 }
 
 type launchPolicy struct {
-	expectedName        string
-	requireStandardType bool
-	automationEnabled   *bool
+	expectedName             string
+	requireStandardType      bool
+	restrictAutomationEnable bool
+	automationEnabled        *bool
+}
+
+type updatePolicy struct {
+	expectedName             string
+	restrictAutomationEnable bool
 }
 
 type validatePathInput struct {
@@ -203,14 +209,36 @@ func (h *Host) Handle(req protocol.Request) protocol.Response {
 	return commandResponse(req, data, err)
 }
 
+// UpdateForMCP checks the existing profile's automation consent and exact
+// expected name inside the same locked metadata transaction.
+func (h *Host) UpdateForMCP(raw json.RawMessage) protocol.Response {
+	req := protocol.Request{Version: protocol.Version, Command: "update_container"}
+	var in struct {
+		updateInput
+		ExpectedName string `json:"expectedName"`
+	}
+	if err := decodeData(raw, &in); err != nil {
+		return commandResponse(req, nil, err)
+	}
+	if strings.TrimSpace(in.ExpectedName) == "" {
+		return commandResponse(req, nil, fail("INVALID_ARGUMENT", "an expected container name is required"))
+	}
+	data, err := h.updateWithPolicy(in.updateInput, updatePolicy{
+		expectedName:             in.ExpectedName,
+		restrictAutomationEnable: true,
+	})
+	return commandResponse(req, data, err)
+}
+
 // LaunchForMCP applies MCP-only identity and browser restrictions while the
 // current container record is reserved for launch under the store lock.
 func (h *Host) LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response {
 	req := protocol.Request{Version: protocol.Version, Command: "launch_container"}
 	data, err := h.launchWithPolicy(launchInput{ID: id, URL: url, AutomationEnabled: automationEnabled}, launchPolicy{
-		expectedName:        expectedName,
-		requireStandardType: true,
-		automationEnabled:   automationEnabled,
+		expectedName:             expectedName,
+		requireStandardType:      true,
+		restrictAutomationEnable: true,
+		automationEnabled:        automationEnabled,
 	})
 	return commandResponse(req, data, err)
 }
@@ -576,6 +604,10 @@ func (h *Host) create(in containerInput, temporary bool) (model.Container, error
 }
 
 func (h *Host) update(in updateInput) (model.Container, error) {
+	return h.updateWithPolicy(in, updatePolicy{})
+}
+
+func (h *Host) updateWithPolicy(in updateInput, policy updatePolicy) (model.Container, error) {
 	if err := security.ValidateID(in.ID); err != nil {
 		return model.Container{}, fail("INVALID_CONTAINER_ID", "%v", err)
 	}
@@ -591,6 +623,12 @@ func (h *Host) update(in updateInput) (model.Container, error) {
 		for i := range db.Containers {
 			if db.Containers[i].ID == in.ID {
 				c := &db.Containers[i]
+				if policy.expectedName != "" && c.Name != policy.expectedName {
+					return fail("CONTAINER_NAME_MISMATCH", "container name changed")
+				}
+				if policy.restrictAutomationEnable && !c.AutomationEnabled && validated.AutomationEnabled {
+					return fail("AUTOMATION_CONSENT_REQUIRED", "enable browser automation in ScopeNest before MCP may control this existing container")
+				}
 				c.Name, c.Color, c.Icon = validated.Name, validated.Color, validated.Icon
 				c.BrowserType, c.BrowserExecutable = validated.BrowserType, validated.BrowserExecutable
 				c.NetworkMode, c.ProxyProfileID, c.EnvironmentTemplateID = validated.NetworkMode, validated.ProxyProfileID, validated.EnvironmentTemplateID
@@ -783,6 +821,9 @@ func (h *Host) reserveLaunchWithEnvironment(id string, policy launchPolicy) (mod
 			effectiveAutomation := container.AutomationEnabled
 			if policy.automationEnabled != nil {
 				effectiveAutomation = *policy.automationEnabled
+			}
+			if policy.restrictAutomationEnable && effectiveAutomation && !container.AutomationEnabled {
+				return fail("AUTOMATION_CONSENT_REQUIRED", "enable browser automation in ScopeNest before MCP may control this existing container")
 			}
 			if effectiveAutomation && !isStandardBrowserType(container.BrowserType) {
 				return fail("AUTOMATION_REQUIRES_STANDARD_BROWSER", "automation requires a detected standard Chromium-family browser")

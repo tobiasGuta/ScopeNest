@@ -179,7 +179,7 @@ Configuration keys and restart behavior are client-specific. ScopeNest has not b
 | `scopenest_get_container_readiness` | `get_container_readiness` | Effective network, listener, certificate states, warnings, and readiness |
 | `scopenest_create_container` | `create_container` | Create a persistent isolated profile |
 | `scopenest_create_temporary_container` | `create_temporary_container` | Create a disposable profile cleaned after safe owned-process exit |
-| `scopenest_update_container` | `update_container` | Update container metadata, browser selection, network mode, and automation settings |
+| `scopenest_update_container` | bounded host method | Edit container metadata, retain existing automation approval, or disable automation; cannot enable a previously disabled existing profile |
 | `scopenest_launch_container` | `launch_container` | Identity-confirmed browser launch at an optional HTTP(S) URL |
 | `scopenest_close_container` | `close_container` | Identity-confirmed close, limited to this MCP process's owned process tree |
 | `scopenest_browser_status` | bounded host method | Confirm automation readiness without exposing the endpoint |
@@ -216,7 +216,7 @@ Create a direct Chrome container. MCP creation accepts only `chrome`, `chromium`
 }
 ```
 
-Update an existing container's properties, network mode, or automation settings (requires `expectedName` as an identity and staleness check):
+Update an existing human-approved container's properties, network mode, or automation settings (requires `expectedName` as an identity and staleness check). To enable automation on a previously disabled saved profile, first use the human-operated ScopeNest extension:
 
 ```json
 {
@@ -242,7 +242,9 @@ Launch requires the exact current name as an identity and staleness check (with 
 }
 ```
 
-`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. If the ID is absent or the name has changed, the browser is not launched. If `automationEnabled` is provided in the launch request, it overrides the stored container preference for that launch session without mutating the persistent database record. The expected name and standard browser type are checked against the current container record while the shared store lock is held in the same transaction that creates the launch reservation. The host also validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, and duplicate-launch state.
+`expectedName` is not human approval: an MCP client can obtain the name from `scopenest_list_containers`. For existing containers, MCP cannot change saved `automationEnabled` from `false` to `true`; this returns `AUTOMATION_CONSENT_REQUIRED`. MCP can disable automation or retain a saved `true` setting. The update identity and consent checks run inside the same locked metadata transaction. MCP may also create a **new, empty** container with automation enabled, since no existing profile/session is being granted to an agent.
+
+For MCP launch, `automationEnabled: false` may temporarily disable automation. `automationEnabled: true` can use **only** a profile whose saved setting is already `true`; it cannot override saved `false`. A rejected launch returns `AUTOMATION_CONSENT_REQUIRED` without starting a browser or reserving the profile. The session override does not mutate the saved setting. The expected name, saved consent, and browser type are all checked inside the launch-reservation transaction. The host also validates URL scheme, credentials, length, browser path, proxy/template/certificate state, profile locks, and duplicate-launch state.
 
 After launch, Codex controls that exact isolated identity through the same configured ScopeNest MCP server; no second server or dynamic MCP reconfiguration is needed:
 

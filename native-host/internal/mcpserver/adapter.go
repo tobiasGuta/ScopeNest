@@ -13,6 +13,7 @@ import (
 type CommandHandler interface {
 	Handle(protocol.Request) protocol.Response
 	LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response
+	UpdateForMCP(json.RawMessage) protocol.Response
 	StartStartupCleanup()
 }
 
@@ -34,7 +35,7 @@ var allowedCommands = map[string]bool{
 	"get_running_containers": true, "list_proxy_profiles": true,
 	"list_environment_templates": true, "get_container_readiness": true,
 	"create_container": true, "create_temporary_container": true,
-	"update_container": true, "close_container": true,
+	"close_container": true,
 }
 
 // Adapter serializes all access to one long-lived ScopeNest host instance.
@@ -63,7 +64,7 @@ func (a *Adapter) Execute(command string, data any) protocol.Response {
 func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any) protocol.Response {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if command != "close_container" && command != "update_container" {
+	if command != "close_container" {
 		return localError(command, "UNKNOWN_COMMAND", "The requested ScopeNest operation is not available through MCP.")
 	}
 	list := a.executeLocked("list_containers", struct{}{})
@@ -95,6 +96,26 @@ func (a *Adapter) ExecuteWithIdentity(command, id, expectedName string, data any
 	}
 	a.scheduleCleanupLocked()
 	return localError(command, "NOT_FOUND", "The requested container was not found; no action was taken.")
+}
+
+// UpdateForMCP uses a dedicated host operation so identity confirmation and
+// automation consent are checked under the authoritative metadata lock.
+func (a *Adapter) UpdateForMCP(data any) protocol.Response {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return localError("update_container", "INVALID_DATA", "The MCP input could not be encoded safely.")
+	}
+	requestID, err := newRequestID()
+	if err != nil {
+		return localError("update_container", "INTERNAL_ERROR", "ScopeNest could not create an internal request identifier.")
+	}
+	response := a.handler.UpdateForMCP(raw)
+	response.RequestID = requestID
+	response.Command = "update_container"
+	a.scheduleCleanupLocked()
+	return response
 }
 
 func (a *Adapter) LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response {

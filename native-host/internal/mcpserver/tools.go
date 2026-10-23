@@ -177,10 +177,10 @@ func registerTools(server *mcp.Server, adapter *Adapter) {
 
 	addTool(server, toolSpec{
 		name: "scopenest_update_container", command: "update_container",
-		description: "Update an existing ScopeNest browser container's metadata, browser selection, network mode, and automation settings.",
+		description: "Update a container. MCP can disable automation or preserve prior human approval, but cannot turn it on for an existing profile where it is disabled. Enable it in the ScopeNest UI first.",
 		schema:      updateSchema(), annotations: mutating,
 	}, func(in updateContainerInput) protocol.Response {
-		return adapter.ExecuteWithIdentity("update_container", in.ID, in.ExpectedName, in)
+		return adapter.UpdateForMCP(in)
 	}, validateUpdate)
 
 	addTool(server, toolSpec{
@@ -507,7 +507,7 @@ func createSchema() map[string]any {
 		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
 		"proxyProfileId":        idProperty("Existing proxy profile ID when networkMode is proxy"),
 		"environmentTemplateId": idProperty("Existing environment template ID when networkMode is template"),
-		"automationEnabled":     map[string]any{"type": "boolean", "description": "Explicitly allow localhost-only browser automation for this container when launched"},
+		"automationEnabled":     map[string]any{"type": "boolean", "description": "Preserve existing human permission or disable automation; enabling a previously disabled profile via MCP is rejected"},
 	}, "name", "color", "browserType", "networkMode")
 }
 
@@ -522,7 +522,7 @@ func updateSchema() map[string]any {
 		"networkMode":           map[string]any{"type": "string", "description": "Direct, proxy-profile, or environment-template networking", "enum": stringsToAny(security.SupportedNetworkModes())},
 		"proxyProfileId":        idProperty("Existing proxy profile ID when networkMode is proxy"),
 		"environmentTemplateId": idProperty("Existing environment template ID when networkMode is template"),
-		"automationEnabled":     map[string]any{"type": "boolean", "description": "Explicitly allow localhost-only browser automation for this container when launched"},
+		"automationEnabled":     map[string]any{"type": "boolean", "description": "Enable localhost-only automation for a newly created, empty profile"},
 	}, "id", "expectedName", "name", "color", "browserType", "networkMode")
 }
 
@@ -559,7 +559,7 @@ func launchSchema() map[string]any {
 		"id":                idProperty("ScopeNest container ID to launch"),
 		"expectedName":      map[string]any{"type": "string", "description": "Exact current container name used as an identity confirmation", "minLength": 1, "maxLength": 80},
 		"url":               map[string]any{"type": "string", "description": "Optional absolute HTTP(S) URL without credentials", "maxLength": 8192},
-		"automationEnabled": map[string]any{"type": "boolean", "description": "Optional override to enable or disable local browser automation for this launch session"},
+		"automationEnabled": map[string]any{"type": "boolean", "description": "Optional launch override: false can disable automation; true requires saved automation permission already enabled"},
 	}, "id", "expectedName")
 }
 

@@ -393,7 +393,7 @@ func TestAutomationInitializationFailureTerminatesProcessAndRollsBackReservation
 }
 
 func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
-	h, _, executable := testHost(t)
+	h, st, executable := testHost(t)
 	process := newControlledProcess(os.Getpid(), false)
 	h.launcher = &queuedLauncher{processes: []browser.Process{process}}
 	closed := make(chan struct{})
@@ -422,6 +422,7 @@ func TestCloseClearsInMemoryAutomationRuntime(t *testing.T) {
 	if runtime != nil {
 		t.Fatal("closed automation runtime remained addressable")
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "automation close watcher")
 }
 
 func TestBrowserCDPEndpointForMCP(t *testing.T) {
@@ -480,7 +481,7 @@ func TestBrowserCDPEndpointForMCP(t *testing.T) {
 	}
 }
 
-func TestLaunchContainerAutomationOverrideEnablesSessionAutomationWithoutMutatingStore(t *testing.T) {
+func TestMCPLaunchRequiresExistingAutomationConsent(t *testing.T) {
 	h, st, executable := testHost(t)
 	process := newControlledProcess(os.Getpid(), false)
 	launcher := &queuedLauncher{processes: []browser.Process{process}}
@@ -491,47 +492,108 @@ func TestLaunchContainerAutomationOverrideEnablesSessionAutomationWithoutMutatin
 		return &automationRuntime{pages: map[string]target.ID{}}, nil
 	}
 
-	// Create container with automation disabled
-	created := h.Handle(request(t, "create_container", containerInput{Name: "Override Test", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: false}))
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Human only", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: false}))
 	if !created.Success {
 		t.Fatalf("create failed: %#v", created)
 	}
 	container := created.Data.(model.Container)
-
-	// Launch with automation override = true
-	enableOverride := true
-	response := h.LaunchForMCP(container.ID, container.Name, "", &enableOverride)
-	if !response.Success {
-		t.Fatalf("launch with automationEnabled override failed: %#v", response)
+	enable := true
+	denied := h.LaunchForMCP(container.ID, container.Name, "", &enable)
+	if denied.Success || denied.ErrorCode != "AUTOMATION_CONSENT_REQUIRED" {
+		t.Fatalf("MCP enabled automation without consent: %#v", denied)
 	}
-	launched := response.Data.(model.Container)
-	if !launched.AutomationEnabled {
-		t.Fatalf("launched container model does not have AutomationEnabled=true: %#v", launched)
+	if launcher.CallCount() != 0 || automationStarted {
+		t.Fatal("denied MCP launch spawned a browser or initialized automation")
 	}
-	if !automationStarted {
-		t.Fatal("automationStarter was not called despite automationEnabled=true override")
-	}
-
-	// Verify automation runtime recognizes the active session automation
-	runtime, err := h.automationForMCP(container.ID, container.Name)
-	if err != nil || runtime == nil {
-		t.Fatalf("automationForMCP failed for override session: runtime=%v err=%v", runtime, err)
-	}
-
-	// Verify database record still has AutomationEnabled=false
 	db, err := st.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(db.Containers) != 1 || db.Containers[0].AutomationEnabled {
-		t.Fatalf("database record was mutated by launch override: %#v", db.Containers)
+	if len(db.Containers) != 1 || db.Containers[0].AutomationEnabled || db.Containers[0].State != model.StateStopped {
+		t.Fatalf("denied launch changed persistent state: %#v", db.Containers)
 	}
 
-	// Close container
+	// The regular extension/native-host path remains the human permission authority.
+	approved := h.Handle(request(t, "update_container", updateInput{ID: container.ID, Name: container.Name, Color: container.Color, BrowserType: "chrome", BrowserExecutable: executable, AutomationEnabled: true}))
+	if !approved.Success {
+		t.Fatalf("human approval failed: %#v", approved)
+	}
+	launched := h.LaunchForMCP(container.ID, container.Name, "", &enable)
+	if !launched.Success || !launched.Data.(model.Container).AutomationEnabled || !automationStarted {
+		t.Fatalf("MCP could not use existing approval: %#v, automationStarted=%v", launched, automationStarted)
+	}
 	closed := h.Handle(request(t, "close_container", idInput{ID: container.ID}))
 	if !closed.Success {
 		t.Fatalf("close failed: %#v", closed)
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "approved MCP launch shutdown")
+}
+
+func TestMCPUpdateCannotGrantOrRestoreAutomationConsent(t *testing.T) {
+	h, st, executable := testHost(t)
+	created := h.Handle(request(t, "create_container", containerInput{Name: "Saved human profile", Color: "#725cff", BrowserType: "chrome", BrowserExecutable: executable}))
+	if !created.Success {
+		t.Fatalf("create failed: %#v", created)
+	}
+	container := created.Data.(model.Container)
+	update := func(expectedName, name string, enabled bool) protocol.Response {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"id": container.ID, "expectedName": expectedName, "name": name, "color": "#725cff",
+			"browserType": "chrome", "browserExecutable": executable,
+			"networkMode": "direct", "automationEnabled": enabled,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h.UpdateForMCP(raw)
+	}
+	assertStored := func(name string, enabled bool) {
+		t.Helper()
+		db, err := st.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(db.Containers) != 1 || db.Containers[0].Name != name || db.Containers[0].AutomationEnabled != enabled {
+			t.Fatalf("unexpected state after update: %#v", db.Containers)
+		}
+	}
+	denied := update(container.Name, "Unauthorized rename", true)
+	if denied.Success || denied.ErrorCode != "AUTOMATION_CONSENT_REQUIRED" {
+		t.Fatalf("MCP enabled disabled profile: %#v", denied)
+	}
+	assertStored(container.Name, false)
+
+	stale := update("Wrong name", "Unauthorized rename", false)
+	if stale.Success || stale.ErrorCode != "CONTAINER_NAME_MISMATCH" {
+		t.Fatalf("MCP update accepted stale identity: %#v", stale)
+	}
+	assertStored(container.Name, false)
+
+	// Human-operated native host enables automation; MCP may retain it while editing.
+	human := h.Handle(request(t, "update_container", updateInput{
+		ID: container.ID, Name: container.Name, Color: container.Color, BrowserType: "chrome",
+		BrowserExecutable: executable, NetworkMode: "direct", AutomationEnabled: true,
+	}))
+	if !human.Success {
+		t.Fatalf("human update failed: %#v", human)
+	}
+	allowed := update(container.Name, "Approved profile", true)
+	if !allowed.Success {
+		t.Fatalf("MCP could not edit approved profile: %#v", allowed)
+	}
+	assertStored("Approved profile", true)
+
+	disabled := update("Approved profile", "Disabled profile", false)
+	if !disabled.Success {
+		t.Fatalf("MCP could not disable automation: %#v", disabled)
+	}
+	assertStored("Disabled profile", false)
+	reEnable := update("Disabled profile", "Reenabled without consent", true)
+	if reEnable.Success || reEnable.ErrorCode != "AUTOMATION_CONSENT_REQUIRED" {
+		t.Fatalf("MCP restored revoked consent: %#v", reEnable)
+	}
+	assertStored("Disabled profile", false)
 }
 
 func TestLaunchContainerAutomationOverrideCanDisableSessionAutomation(t *testing.T) {
@@ -585,6 +647,7 @@ func TestLaunchContainerAutomationOverrideCanDisableSessionAutomation(t *testing
 	if !closed.Success {
 		t.Fatalf("close failed: %#v", closed)
 	}
+	waitForContainer(t, st, container.ID, func(c model.Container) bool { return c.State == model.StateStopped }, "disabled-automation launch shutdown")
 }
 
 func TestLaunchContainerAutomationOverrideRejectsCustomBrowser(t *testing.T) {
