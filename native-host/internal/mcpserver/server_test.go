@@ -85,6 +85,29 @@ func (f *fakeHandler) Handle(request protocol.Request) protocol.Response {
 	return protocol.NewSuccess(request, f.responseData(request.Command))
 }
 
+func (f *fakeHandler) UpdateForMCP(raw json.RawMessage) protocol.Response {
+	var data map[string]any
+	_ = json.Unmarshal(raw, &data)
+	requestID, _ := newRequestID()
+	request := protocol.Request{Version: protocol.Version, RequestID: requestID, Command: "update_container", Data: raw}
+	encoded, _ := json.Marshal(f.responseData("list_containers"))
+	var containers []struct {
+		ID string `json:"id"`
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(encoded, &containers)
+	for _, container := range containers {
+		if container.ID != data["id"] {
+			continue
+		}
+		if container.Name != data["expectedName"] {
+			return protocol.NewError(request, "CONTAINER_NAME_MISMATCH", "container name changed")
+		}
+		return f.Handle(request)
+	}
+	return protocol.NewError(request, "NOT_FOUND", "container was not found")
+}
+
 func (f *fakeHandler) LaunchForMCP(id, expectedName, url string, automationEnabled *bool) protocol.Response {
 	requestID, _ := newRequestID()
 	data := map[string]any{"id": id, "url": url}
@@ -890,7 +913,7 @@ func TestUpdateContainerTool(t *testing.T) {
 		t.Fatalf("valid update container failed: %#v", result.Content)
 	}
 	calls, _ := handler.snapshot()
-	if len(calls) != 2 || calls[1].request.Command != "update_container" || calls[1].data["automationEnabled"] != true {
+	if len(calls) != 1 || calls[0].request.Command != "update_container" || calls[0].data["automationEnabled"] != true {
 		t.Fatalf("update was not forwarded correctly: %#v", calls)
 	}
 
